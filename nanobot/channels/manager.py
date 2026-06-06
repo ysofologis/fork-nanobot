@@ -128,7 +128,6 @@ class ChannelManager:
                         runtime_surface=self._webui_runtime_surface,
                         runtime_capabilities_overrides=self._webui_runtime_capabilities,
                         cron_service=self._cron_service,
-                        cron_pending_job_ids=self._webui_cron_pending_job_ids,
                         logger=logger,
                     )
                     kwargs["gateway"] = gateway

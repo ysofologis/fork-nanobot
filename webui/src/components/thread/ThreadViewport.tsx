@@ -37,13 +37,7 @@ interface ThreadViewportProps {
   showScrollToBottomButton?: boolean;
   cliApps?: CliAppInfo[];
   mcpPresets?: McpPresetInfo[];
-  forkBoundaryMessageCount?: number | null;
-  hasMoreBefore?: boolean;
-  loadingOlder?: boolean;
-  userMessageOffset?: number;
-  onLoadOlder?: () => Promise<void> | void;
   onOpenFilePreview?: (path: string) => void;
-  onForkFromMessage?: (beforeUserIndex: number) => void;
 }
 
 const NEAR_BOTTOM_PX = 48;
@@ -76,13 +70,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   showScrollToBottomButton = true,
   cliApps = [],
   mcpPresets = [],
-  forkBoundaryMessageCount = null,
-  hasMoreBefore = false,
-  loadingOlder = false,
-  userMessageOffset = 0,
-  onLoadOlder,
   onOpenFilePreview,
-  onForkFromMessage,
 }, ref) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -207,6 +195,22 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
 
   useImperativeHandle(ref, () => ({ jumpToUserPrompt }), [jumpToUserPrompt]);
 
+  const jumpToUserPrompt = useCallback((promptId: string) => {
+    const scrollEl = scrollRef.current;
+    if (scrollEl && findPromptElement(scrollEl, promptId)) {
+      jumpToPrompt(scrollEl, promptId);
+      return;
+    }
+    const index = messages.findIndex((message) => message.id === promptId);
+    if (index < 0) return;
+    pendingPromptJumpRef.current = promptId;
+    userReadingHistoryRef.current = true;
+    setAtBottom(false);
+    setVisibleMessageCount((count) => Math.max(count, messages.length - index));
+  }, [messages]);
+
+  useImperativeHandle(ref, () => ({ jumpToUserPrompt }), [jumpToUserPrompt]);
+
   const measureComposerDock = useCallback(() => {
     const el = composerDockRef.current;
     if (!el) return;
@@ -256,6 +260,15 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
       }
     }
   }, [visibleMessages.length, messages.length]);
+
+  useLayoutEffect(() => {
+    const promptId = pendingPromptJumpRef.current;
+    const scrollEl = scrollRef.current;
+    if (!promptId || !scrollEl || !findPromptElement(scrollEl, promptId)) return;
+    pendingPromptJumpRef.current = null;
+    const frame = window.requestAnimationFrame(() => jumpToPrompt(scrollEl, promptId));
+    return () => window.cancelAnimationFrame(frame);
+  }, [visibleMessages.length]);
 
   useLayoutEffect(() => {
     const promptId = pendingPromptJumpRef.current;
@@ -343,9 +356,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
                   hiddenUserMessageCount={hiddenUserMessageCount}
                   cliApps={cliApps}
                   mcpPresets={mcpPresets}
-                  forkBoundaryMessageCount={visibleForkBoundaryMessageCount}
                   onOpenFilePreview={onOpenFilePreview}
-                  onForkFromMessage={onForkFromMessage}
                 />
               </div>
             </div>

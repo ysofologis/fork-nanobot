@@ -113,17 +113,10 @@ export interface SessionAutomationJob {
   state: {
     next_run_at_ms?: number | null;
     last_status?: "ok" | "error" | "skipped" | string | null;
-    pending?: boolean;
   };
 }
 
 export interface SessionAutomationsPayload { jobs: SessionAutomationJob[]; }
-
-export interface SessionDeleteResult {
-  deleted: boolean;
-  blocked_by_automations?: boolean;
-  automations?: SessionAutomationJob[];
-}
 
 export interface SkillSummary {
   name: string;

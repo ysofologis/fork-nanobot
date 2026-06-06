@@ -508,11 +508,6 @@
       "rawInstructions": "SKILL.md gốc",
       "rawInstructionsEmpty": "Không có hướng dẫn gốc.",
       "detailDescription": "Chi tiết cho {{name}}."
-    },
-    "voice": {
-      "selectProvider": "Chon nha cung cap",
-      "configureProvider": "Cau hinh nha cung cap",
-      "languageAuto": "Tu dong"
     }
   },
   "chat": {
@@ -671,7 +666,6 @@
       },
       "next": {
         "label": "Tiếp theo {{time}}",
-        "pending": "Sắp chạy",
         "disabled": "Đã tạm dừng",
         "none": "Không có lần chạy tiếp theo"
       }
@@ -835,7 +829,6 @@
     },
     "scrollToBottom": "Cuộn xuống cuối",
     "loadEarlier": "Tải tin nhắn trước đó",
-    "forkedFromHistory": "Tách nhánh từ lịch sử",
     "promptNavigator": {
       "open": "Mở trình điều hướng prompt",
       "title": "Prompt",

@@ -508,11 +508,6 @@
       "rawInstructions": "SKILL.md mentah",
       "rawInstructionsEmpty": "Tidak ada instruksi mentah.",
       "detailDescription": "Detail untuk {{name}}."
-    },
-    "voice": {
-      "selectProvider": "Pilih penyedia",
-      "configureProvider": "Konfigurasi penyedia",
-      "languageAuto": "Auto"
     }
   },
   "chat": {
@@ -671,7 +666,6 @@
       },
       "next": {
         "label": "Berikutnya {{time}}",
-        "pending": "Segera berjalan",
         "disabled": "Dijeda",
         "none": "Tidak ada jadwal berikutnya"
       }
@@ -835,7 +829,6 @@
     },
     "scrollToBottom": "Gulir ke bawah",
     "loadEarlier": "Muat pesan sebelumnya",
-    "forkedFromHistory": "Fork dari riwayat",
     "promptNavigator": {
       "open": "Buka navigator prompt",
       "title": "Prompt",

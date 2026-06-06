@@ -508,11 +508,6 @@
       "rawInstructions": "元の SKILL.md",
       "rawInstructionsEmpty": "元の説明はありません。",
       "detailDescription": "{{name}} の詳細。"
-    },
-    "voice": {
-      "selectProvider": "プロバイダーを選択",
-      "configureProvider": "プロバイダーを設定",
-      "languageAuto": "自動"
     }
   },
   "chat": {
@@ -671,7 +666,6 @@
       },
       "next": {
         "label": "次回 {{time}}",
-        "pending": "まもなく実行",
         "disabled": "一時停止",
         "none": "次回実行なし"
       }
@@ -835,7 +829,6 @@
     },
     "scrollToBottom": "一番下へスクロール",
     "loadEarlier": "以前のメッセージを読み込む",
-    "forkedFromHistory": "履歴から分岐",
     "promptNavigator": {
       "open": "プロンプトナビゲーターを開く",
       "title": "プロンプト",
