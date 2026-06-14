@@ -86,6 +86,7 @@
       "interface": "Interface utilisateur",
       "ai": "AI",
       "system": "Système",
+      "about": "À propos",
       "status": "État",
       "localPreferences": "Préférences locales",
       "presets": "Préréglages",
@@ -391,6 +392,13 @@
       "unavailable": "Indisponible",
       "noDescription": "Aucune description disponible."
     },
+    "about": {
+      "version": "Version",
+      "checking": "Recherche de mises à jour...",
+      "checkForUpdates": "Rechercher les mises à jour",
+      "upToDate": "Vous êtes à jour",
+      "updateAvailable": "Mise à jour disponible v{{version}}"
+    },
     "mcp": {
       "allCategories": "Toutes les catégories",
       "summary": "{{installed}} presets activés sur {{total}}",
@@ -500,11 +508,6 @@
       "rawInstructions": "SKILL.md brut",
       "rawInstructionsEmpty": "Aucune instruction brute.",
       "detailDescription": "Détails de {{name}}."
-    },
-    "voice": {
-      "selectProvider": "Choisir un fournisseur",
-      "configureProvider": "Configurer le fournisseur",
-      "languageAuto": "Auto"
     }
   },
   "chat": {
@@ -551,7 +554,22 @@
     "title": "Supprimer cette discussion ?",
     "description": "Cette action est irréversible.",
     "cancel": "Annuler",
-    "confirm": "Supprimer"
+    "confirm": "Supprimer",
+    "automationsDescription": "Cette discussion contient des automatisations planifiées. La supprimer les supprimera aussi.",
+    "moreAutomations": "+ {{count}} autres",
+    "confirmWithAutomations": "Supprimer la discussion et les automatisations",
+    "schedule": {
+      "at": "{{time}}",
+      "every": "Tous les {{duration}}",
+      "cron": "Cron {{expr}}",
+      "cronWithTz": "Cron {{expr}} · {{tz}}",
+      "unknown": "Planification personnalisée"
+    },
+    "next": {
+      "label": "Prochaine exécution : {{time}}",
+      "disabled": "En pause",
+      "none": "Aucune prochaine exécution"
+    }
   },
   "connection": {
     "idle": "Inactif",
@@ -811,7 +829,6 @@
     },
     "scrollToBottom": "Faire défiler vers le bas",
     "loadEarlier": "Charger les messages précédents",
-    "forkedFromHistory": "Bifurqué depuis l'historique",
     "promptNavigator": {
       "open": "Ouvrir le navigateur de prompts",
       "title": "Prompts",

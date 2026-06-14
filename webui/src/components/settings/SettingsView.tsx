@@ -120,7 +120,6 @@ import type {
   ProviderModelsPayload,
   SettingsPayload,
   SkillSummary,
-  TranscriptionSettingsUpdate,
   WebSearchSettingsUpdate,
   WebuiDefaultAccessMode,
 } from "@/lib/types";
@@ -374,26 +373,6 @@ const DEFAULT_IMAGE_GENERATION_FORM: ImageGenerationSettingsUpdate = {
   maxImagesPerTurn: 4,
 };
 
-const DEFAULT_TRANSCRIPTION_FORM: TranscriptionSettingsUpdate = {
-  enabled: true,
-  provider: "groq",
-  model: "",
-  language: "",
-  maxDurationSec: 120,
-  maxUploadMb: 25,
-};
-
-const DEFAULT_TRANSCRIPTION_SETTINGS: NonNullable<SettingsPayload["transcription"]> = {
-  enabled: true,
-  provider: "groq",
-  provider_configured: false,
-  model: "whisper-large-v3",
-  language: null,
-  max_duration_sec: 120,
-  max_upload_mb: 25,
-  providers: [],
-};
-
 const DEFAULT_NETWORK_SAFETY_FORM: NetworkSafetySettingsUpdate = {
   webuiAllowLocalServiceAccess: true,
   webuiDefaultAccessMode: "default",
@@ -443,18 +422,6 @@ function imageGenerationFormFromPayload(payload: SettingsPayload): ImageGenerati
     defaultAspectRatio: payload.image_generation.default_aspect_ratio,
     defaultImageSize: payload.image_generation.default_image_size,
     maxImagesPerTurn: payload.image_generation.max_images_per_turn,
-  };
-}
-
-function transcriptionFormFromPayload(payload: SettingsPayload): TranscriptionSettingsUpdate {
-  const transcription = payload.transcription ?? DEFAULT_TRANSCRIPTION_SETTINGS;
-  return {
-    enabled: transcription.enabled,
-    provider: transcription.provider,
-    model: transcription.model,
-    language: transcription.language ?? "",
-    maxDurationSec: transcription.max_duration_sec,
-    maxUploadMb: transcription.max_upload_mb,
   };
 }
 
@@ -551,9 +518,6 @@ export function SettingsView({
         ? imageGenerationFormFromPayload(initialSettings)
         : DEFAULT_IMAGE_GENERATION_FORM,
   );
-  const [transcriptionForm, setTranscriptionForm] = useState<TranscriptionSettingsUpdate>(
-    () => initialSettings ? transcriptionFormFromPayload(initialSettings) : DEFAULT_TRANSCRIPTION_FORM,
-  );
   const [networkSafetyForm, setNetworkSafetyForm] = useState<NetworkSafetySettingsUpdate>(() =>
     initialSettings ? networkSafetyFormFromPayload(initialSettings) : DEFAULT_NETWORK_SAFETY_FORM,
   );
@@ -586,7 +550,6 @@ export function SettingsView({
     setForm(agentDraftFromPayload(payload));
     setWebSearchForm((prev) => webSearchFormFromPayload(payload, prev));
     setImageGenerationForm(imageGenerationFormFromPayload(payload));
-    setTranscriptionForm(transcriptionFormFromPayload(payload));
     setNetworkSafetyForm(networkSafetyFormFromPayload(payload));
     if (payload.restart_required_sections) {
       setPendingRestartSections(pendingRestartSectionsFromPayload(payload));
@@ -1760,15 +1723,6 @@ function OverviewSettings({
       ? tx("settings.values.configured", "Configured")
       : tx("settings.values.notConfigured", "Not configured")
   }`;
-  const transcription = settings.transcription ?? DEFAULT_TRANSCRIPTION_SETTINGS;
-  const voiceStatus = transcription.enabled
-    ? tx("settings.values.enabled", "Enabled")
-    : tx("settings.values.disabled", "Disabled");
-  const voiceCaption = `${providerDisplayLabel(transcription.providers, transcription.provider)} · ${
-    transcription.provider_configured
-      ? tx("settings.values.configured", "Configured")
-      : tx("settings.values.notConfigured", "Not configured")
-  }`;
   const isNativeHost = (settings.surface ?? settings.runtime_surface) === "native";
   const workspaceCaption = shortWorkspacePath(settings.runtime.workspace_path);
   const runtimeTitle = isNativeHost
@@ -1785,7 +1739,7 @@ function OverviewSettings({
   return (
     <div className="space-y-7">
       <section>
-        <TokenUsageHeatmap usage={settings.usage} timeZone={settings.agent.timezone} />
+        <TokenUsageHeatmap usage={settings.usage} />
       </section>
 
       <section>
@@ -1935,7 +1889,10 @@ function VersionCheckRow({ currentVersion }: { currentVersion?: string }) {
         {result?.type === "update" ? (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-blue-600 dark:text-blue-300">
             <ArrowUpCircle className="h-3 w-3" aria-hidden />
-            {tx("settings.about.updateAvailable", "Update available")}{result.latestVersion && ` v${result.latestVersion}`}
+            {t("settings.about.updateAvailable", {
+              defaultValue: "Update available v{{version}}",
+              version: result.latestVersion,
+            })}
             {result.pypiUrl ? (
               <a
                 href={result.pypiUrl}

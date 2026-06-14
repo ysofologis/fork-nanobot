@@ -86,6 +86,7 @@
       "interface": "Interfaz",
       "ai": "AI",
       "system": "Sistema",
+      "about": "Acerca de",
       "status": "Estado",
       "localPreferences": "Preferencias locales",
       "presets": "Preajustes",
@@ -391,6 +392,13 @@
       "unavailable": "No disponible",
       "noDescription": "Sin descripción disponible."
     },
+    "about": {
+      "version": "Versión",
+      "checking": "Buscando actualizaciones...",
+      "checkForUpdates": "Buscar actualizaciones",
+      "upToDate": "Estás al día",
+      "updateAvailable": "Actualización disponible v{{version}}"
+    },
     "mcp": {
       "allCategories": "Todas las categorías",
       "summary": "{{installed}} de {{total}} presets habilitados",
@@ -500,11 +508,6 @@
       "rawInstructions": "SKILL.md original",
       "rawInstructionsEmpty": "No hay instrucciones originales.",
       "detailDescription": "Detalles de {{name}}."
-    },
-    "voice": {
-      "selectProvider": "Seleccionar proveedor",
-      "configureProvider": "Configurar proveedor",
-      "languageAuto": "Auto"
     }
   },
   "chat": {
@@ -551,7 +554,22 @@
     "title": "¿Eliminar este chat?",
     "description": "Esta acción no se puede deshacer.",
     "cancel": "Cancelar",
-    "confirm": "Eliminar"
+    "confirm": "Eliminar",
+    "automationsDescription": "Este chat tiene automatizaciones programadas. Al eliminarlo también se eliminarán.",
+    "moreAutomations": "+ {{count}} más",
+    "confirmWithAutomations": "Eliminar chat y automatizaciones",
+    "schedule": {
+      "at": "{{time}}",
+      "every": "Cada {{duration}}",
+      "cron": "Cron {{expr}}",
+      "cronWithTz": "Cron {{expr}} · {{tz}}",
+      "unknown": "Programación personalizada"
+    },
+    "next": {
+      "label": "Siguiente: {{time}}",
+      "disabled": "Pausada",
+      "none": "Sin próxima ejecución"
+    }
   },
   "connection": {
     "idle": "Inactivo",
@@ -811,7 +829,6 @@
     },
     "scrollToBottom": "Desplazarse al final",
     "loadEarlier": "Cargar mensajes anteriores",
-    "forkedFromHistory": "Bifurcado desde el historial",
     "promptNavigator": {
       "open": "Abrir navegador de prompts",
       "title": "Prompts",

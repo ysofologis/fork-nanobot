@@ -222,7 +222,7 @@ def _init_prompt_session() -> None:
         multiline=True,  # Enter submits (single line mode)
         vi_mode=True,
         editing_mode=EditingMode.VI,     
-        prompt_continuation=lambda width, line_no, x: f"{(line_no+1):>3}│ "  # ← line number
+        prompt_continuation=lambda width, line_no, x: f"{line_no:>3}│ "  # ← line number
     )
 
 
@@ -976,13 +976,14 @@ def _run_gateway(
     health_server_enabled: bool = True,
 ) -> None:
     """Shared gateway runtime; ``open_browser_url`` opens a tab once channels are up."""
-    from nanobot.agent.tools.cron import CronTool
     from nanobot.agent.tools.message import MessageTool
     from nanobot.bus.factory import create_bus
     from nanobot.bus.queue import MessageBus
     from nanobot.bus.runtime_events import RuntimeEventBus
     from nanobot.channels.manager import ChannelManager
-    from nanobot.cron.service import CronService
+    from nanobot.cron.bound_runner import run_bound_cron_job
+    from nanobot.cron.service import CronJobSkippedError, CronService
+    from nanobot.cron.session_turns import is_bound_cron_job
     from nanobot.cron.types import CronJob
     from nanobot.providers.factory import build_provider_snapshot, load_provider_snapshot
     from nanobot.providers.image_generation import image_gen_provider_configs
@@ -1031,14 +1032,14 @@ def _run_gateway(
         schedule_background=lambda coro: agent._schedule_background(coro),
     ).subscribe(runtime_events)
 
-    from nanobot.agent.loop import UNIFIED_SESSION_KEY
     from nanobot.bus.events import OutboundMessage
+    from nanobot.session.keys import session_key_for_channel
 
     def _channel_session_key(channel: str, chat_id: str) -> str:
-        return (
-            UNIFIED_SESSION_KEY
-            if config.agents.defaults.unified_session
-            else f"{channel}:{chat_id}"
+        return session_key_for_channel(
+            channel,
+            chat_id,
+            unified_session=config.agents.defaults.unified_session,
         )
 
     async def _deliver_to_channel(
@@ -1201,12 +1202,15 @@ def _run_gateway(
                 logger.info("Heartbeat: silenced by post-run evaluation")
             return response
 
-        reminder_note = (
-            "The scheduled time has arrived. Deliver this reminder to the user now, "
-            "as a brief and natural message in their language. Speak directly to them — "
-            "do not narrate progress, summarize, include user IDs, or add status reports "
-            "like 'Done' or 'Reminded'.\n\n"
-            f"Reminder: {job.payload.message}"
+        if is_bound_cron_job(job):
+            return await run_bound_cron_job(job, agent=agent, cron=cron)
+
+        reason = "unbound agent cron job must be recreated from a chat session"
+        logger.warning(
+            "Cron: skipped unbound agent job '{}' ({}): {}",
+            job.name,
+            job.id,
+            reason,
         )
 
         cron_tool = agent.tools.get("cron")
@@ -1286,6 +1290,7 @@ def _run_gateway(
         session_manager=session_manager,
         cron_service=cron,
         webui_runtime_model_name=_webui_runtime_model_name,
+        webui_cron_pending_job_ids=getattr(agent, "pending_cron_job_ids_for_session", None),
         webui_static_dist=webui_static_dist,
         webui_runtime_surface=webui_runtime_surface,
         webui_runtime_capabilities=webui_runtime_capabilities,
@@ -1567,7 +1572,8 @@ def agent(
         from nanobot.bus.events import InboundMessage
         _init_prompt_session()
         _model, _preset_tag = _model_display(config)
-        console.print(f"{__logo__} Interactive mode [bold blue]({_model})[/bold blue]{_preset_tag} — type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit\n")
+        _icon = config.agents.defaults.bot_icon or __logo__
+        console.print(f"{_icon} Interactive mode [bold blue]({_model})[/bold blue]{_preset_tag} — type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit\n")
 
         if ":" in session_id:
             cli_channel, cli_chat_id = session_id.split(":", 1)
@@ -2053,3 +2059,4 @@ def _login_github_copilot() -> None:
 
 if __name__ == "__main__":
     app()
+

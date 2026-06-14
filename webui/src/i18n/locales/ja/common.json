@@ -86,6 +86,7 @@
       "interface": "インターフェース",
       "ai": "AI",
       "system": "システム",
+      "about": "情報",
       "status": "状態",
       "localPreferences": "ローカル設定",
       "presets": "プリセット",
@@ -391,6 +392,13 @@
       "unavailable": "利用不可",
       "noDescription": "説明はありません。"
     },
+    "about": {
+      "version": "バージョン",
+      "checking": "確認中...",
+      "checkForUpdates": "アップデートを確認",
+      "upToDate": "最新の状態です",
+      "updateAvailable": "アップデートがあります v{{version}}"
+    },
     "mcp": {
       "allCategories": "すべてのカテゴリ",
       "summary": "{{total}} 個中 {{installed}} 個のプリセットが有効",
@@ -500,11 +508,6 @@
       "rawInstructions": "元の SKILL.md",
       "rawInstructionsEmpty": "元の説明はありません。",
       "detailDescription": "{{name}} の詳細。"
-    },
-    "voice": {
-      "selectProvider": "プロバイダーを選択",
-      "configureProvider": "プロバイダーを設定",
-      "languageAuto": "自動"
     }
   },
   "chat": {
@@ -551,7 +554,22 @@
     "title": "このチャットを削除しますか？",
     "description": "この操作は元に戻せません。",
     "cancel": "キャンセル",
-    "confirm": "削除"
+    "confirm": "削除",
+    "automationsDescription": "このチャットにはスケジュール済みの自動タスクがあります。削除するとそれらも削除されます。",
+    "moreAutomations": "他 {{count}} 件",
+    "confirmWithAutomations": "チャットと自動タスクを削除",
+    "schedule": {
+      "at": "{{time}}",
+      "every": "{{duration}} ごと",
+      "cron": "Cron {{expr}}",
+      "cronWithTz": "Cron {{expr}} · {{tz}}",
+      "unknown": "カスタムスケジュール"
+    },
+    "next": {
+      "label": "次回: {{time}}",
+      "disabled": "一時停止中",
+      "none": "次回実行なし"
+    }
   },
   "connection": {
     "idle": "待機中",
@@ -811,7 +829,6 @@
     },
     "scrollToBottom": "一番下へスクロール",
     "loadEarlier": "以前のメッセージを読み込む",
-    "forkedFromHistory": "履歴から分岐",
     "promptNavigator": {
       "open": "プロンプトナビゲーターを開く",
       "title": "プロンプト",

@@ -100,6 +100,46 @@ function settingsPayload(): SettingsPayload {
   };
 }
 
+function autoDynamicProviderPayload(
+  options: {
+    configured: boolean;
+    hasApiKey: boolean;
+    apiBase: string | null;
+    apiKeyHint: string | null;
+  },
+): SettingsPayload {
+  const base = settingsPayload();
+  return {
+    ...base,
+    agent: {
+      ...base.agent,
+      model: "companyProxy/gpt-4o",
+      provider: "companyProxy",
+      resolved_provider: "companyProxy",
+      has_api_key: options.hasApiKey,
+    },
+    model_presets: [
+      {
+        ...base.model_presets[0],
+        model: "companyProxy/gpt-4o",
+        provider: "auto",
+      },
+    ],
+    providers: [
+      {
+        name: "companyProxy",
+        label: "Company Proxy",
+        configured: options.configured,
+        auth_type: "api_key",
+        api_key_required: false,
+        api_key_hint: options.apiKeyHint,
+        api_base: options.apiBase,
+        default_api_base: null,
+      },
+    ],
+  };
+}
+
 const installedAnyGen = {
   name: "anygen",
   display_name: "AnyGen",
@@ -120,7 +160,6 @@ const installedAnyGen = {
 function renderSettingsView(
   options: {
     initialSection?: "overview" | "apps" | "advanced" | "models";
-    initialSettings?: SettingsPayload;
     onSettingsChange?: (payload: SettingsPayload) => void;
     onNativeEngineRestart?: () => Promise<string>;
   } = {},
@@ -272,45 +311,6 @@ describe("SettingsView Apps catalog", () => {
     expect(screen.queryByText("Token activity")).not.toBeInTheDocument();
     expect(screen.queryByText("Total tokens")).not.toBeInTheDocument();
     expect(screen.queryByText("Peak tokens")).not.toBeInTheDocument();
-  });
-
-  it("aligns token activity days with the configured timezone", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-06-02T18:00:00Z"));
-    const basePayload = settingsPayload();
-    const payload: SettingsPayload = {
-      ...basePayload,
-      agent: {
-        ...basePayload.agent,
-        timezone: "Asia/Shanghai",
-      },
-      usage: {
-        days: [
-          {
-            date: "2026-06-03",
-            prompt_tokens: 1200,
-            completion_tokens: 300,
-            cached_tokens: 500,
-            total_tokens: 1500,
-            requests: 2,
-          },
-        ],
-        total_tokens: 1500,
-        total_tokens_30d: 1500,
-        total_tokens_365d: 1500,
-        peak_day_tokens: 1500,
-        current_streak_days: 1,
-        longest_streak_days: 1,
-        active_days_30d: 1,
-        requests_30d: 2,
-        updated_at: "2026-06-03T00:00:00Z",
-      },
-    };
-    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
-
-    renderSettingsView({ initialSection: "overview", initialSettings: payload });
-
-    expect(screen.getByLabelText("2026-06-03: 1.5K tokens, 2 requests")).toBeInTheDocument();
   });
 
   it("shows context window options in model settings", async () => {

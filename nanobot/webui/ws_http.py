@@ -9,9 +9,11 @@ Also houses shared HTTP utility functions used by both this module and
 
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -62,7 +64,6 @@ from nanobot.webui.http_utils import (
 )
 from nanobot.webui.media_gateway import WebUIMediaGateway
 from nanobot.webui.session_automations import session_automations_payload
-from nanobot.webui.session_list_index import list_webui_sessions
 from nanobot.webui.sidebar_state import (
     read_webui_sidebar_state,
     write_webui_sidebar_state,
@@ -71,6 +72,8 @@ from nanobot.webui.skills_api import webui_skill_detail_payload, webui_skills_pa
 from nanobot.webui.thread_disk import delete_webui_thread
 from nanobot.webui.transcript import build_webui_thread_response
 from nanobot.webui.workspaces import WebUIWorkspaceController
+
+_SLOW_WEBUI_HTTP_LOG_MS = 1_000
 
 if TYPE_CHECKING:
     from nanobot.bus.queue import MessageBus
@@ -186,7 +189,21 @@ class GatewayHTTPHandler:
     async def dispatch(self, connection: Any, request: WsRequest) -> Any | None:
         """Route an HTTP request. Returns Response or None."""
         got, _ = _parse_request_path(request.path)
+        started = time.perf_counter()
+        response: Any | None = None
 
+        try:
+            response = await self._dispatch_resolved(connection, request, got)
+            return response
+        finally:
+            self._log_slow_http(got, response, started)
+
+    async def _dispatch_resolved(
+        self,
+        connection: Any,
+        request: WsRequest,
+        got: str,
+    ) -> Any | None:
         # Token issue endpoint
         if self.config.token_issue_path:
             issue_expected = _normalize_config_path(self.config.token_issue_path)
@@ -203,7 +220,7 @@ class GatewayHTTPHandler:
             return response
 
         # Session routes
-        response = self._dispatch_session_routes(request, got)
+        response = await self._dispatch_session_routes(request, got)
         if response is not None:
             return response
 
@@ -213,7 +230,7 @@ class GatewayHTTPHandler:
             return response
 
         # Misc routes
-        response = self._dispatch_misc_routes(connection, request, got)
+        response = await self._dispatch_misc_routes(connection, request, got)
         if response is not None:
             return response
 
@@ -228,6 +245,20 @@ class GatewayHTTPHandler:
                 return response
 
         return connection.respond(404, "Not Found")
+
+    def _log_slow_http(self, path: str, response: Any | None, started: float) -> None:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        if elapsed_ms < _SLOW_WEBUI_HTTP_LOG_MS:
+            return
+        if not (path.startswith("/api/") or path == "/webui/bootstrap"):
+            return
+        status = getattr(response, "status_code", None)
+        self._log.warning(
+            "slow webui http route path={} status={} duration_ms={}",
+            path,
+            status if status is not None else "none",
+            elapsed_ms,
+        )
 
     # -- Token issue --------------------------------------------------------
 
@@ -296,7 +327,7 @@ class GatewayHTTPHandler:
 
     # -- Session routes -----------------------------------------------------
 
-    def _dispatch_session_routes(self, request: WsRequest, got: str) -> Response | None:
+    async def _dispatch_session_routes(self, request: WsRequest, got: str) -> Response | None:
         m = re.match(r"^/api/sessions/([^/]+)/messages$", got)
         if m:
             return self._handle_session_messages(request, m.group(1))
@@ -319,11 +350,16 @@ class GatewayHTTPHandler:
 
         return None
 
-    def _handle_sessions_list(self, request: WsRequest) -> Response:
+    async def _handle_sessions_list(self, request: WsRequest) -> Response:
         if not self.check_api_token(request):
             return _http_error(401, "Unauthorized")
         if self.session_manager is None:
             return _http_error(503, "session manager unavailable")
+        payload = await asyncio.to_thread(self._sessions_list_payload)
+        return _http_json_response(payload)
+
+    def _sessions_list_payload(self) -> dict[str, Any]:
+        assert self.session_manager is not None
         sessions = list_webui_sessions(self.session_manager)
         from nanobot.session.webui_turns import websocket_turn_wall_started_at
 
@@ -340,7 +376,7 @@ class GatewayHTTPHandler:
             scope = self.workspaces.scope_for_session_key(key)
             row["workspace_scope"] = scope.payload()
             cleaned.append(row)
-        return _http_json_response({"sessions": cleaned})
+        return {"sessions": cleaned}
 
     def _handle_session_messages(self, request: WsRequest, key: str) -> Response:
         if not self.check_api_token(request):
@@ -446,6 +482,20 @@ class GatewayHTTPHandler:
             return _http_error(400, "invalid session key")
         if not _is_websocket_channel_session_key(decoded_key):
             return _http_error(404, "session not found")
+        query = _parse_query(request.path)
+        delete_automations = (_query_first(query, "delete_automations") or "").lower()
+        automation_jobs = session_automation_jobs(self.cron_service, decoded_key)
+        if automation_jobs and delete_automations not in {"1", "true", "yes"}:
+            return _http_json_response(
+                {
+                    "deleted": False,
+                    "blocked_by_automations": True,
+                    "automations": serialize_automation_jobs(automation_jobs),
+                }
+            )
+        if automation_jobs and self.cron_service is not None:
+            for job in automation_jobs:
+                self.cron_service.remove_job(job.id)
         deleted = self.session_manager.delete_session(decoded_key)
         delete_webui_thread(decoded_key)
         return _http_json_response({"deleted": bool(deleted)})
@@ -469,11 +519,11 @@ class GatewayHTTPHandler:
 
     # -- Misc routes --------------------------------------------------------
 
-    def _dispatch_misc_routes(
+    async def _dispatch_misc_routes(
         self, connection: Any, request: WsRequest, got: str
     ) -> Response | None:
         if got == "/api/sessions":
-            return self._handle_sessions_list(request)
+            return await self._handle_sessions_list(request)
         if got == "/api/commands":
             return self._handle_commands(request)
         if got == "/api/workspaces":

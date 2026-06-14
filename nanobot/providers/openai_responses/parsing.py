@@ -43,27 +43,6 @@ def _usage_from_response_obj(response: Any) -> dict[str, int]:
     }
 
 
-def _parse_tool_call_arguments(args_raw: Any, name: str | None) -> Any:
-    parsed = parse_tool_arguments(args_raw)
-    if parsed == args_raw and isinstance(args_raw, str) and args_raw.strip():
-        logger.warning(
-            "Failed to parse tool call arguments for '{}': {}",
-            name,
-            args_raw[:200],
-        )
-    return parsed
-
-
-def _tool_arguments_source(*values: Any) -> Any:
-    for value in values:
-        if value is None:
-            continue
-        if isinstance(value, str) and not value.strip():
-            continue
-        return value
-    return "{}"
-
-
 async def iter_sse(response: httpx.Response) -> AsyncGenerator[dict[str, Any], None]:
     """Yield parsed JSON events from a Responses API SSE stream."""
     buffer: list[str] = []

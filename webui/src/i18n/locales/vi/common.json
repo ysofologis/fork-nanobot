@@ -86,6 +86,7 @@
       "interface": "Giao diện",
       "ai": "AI",
       "system": "Hệ thống",
+      "about": "Giới thiệu",
       "status": "Trạng thái",
       "localPreferences": "Tùy chọn cục bộ",
       "presets": "Preset",
@@ -391,6 +392,13 @@
       "unavailable": "Không khả dụng",
       "noDescription": "Không có mô tả."
     },
+    "about": {
+      "version": "Phiên bản",
+      "checking": "Đang kiểm tra...",
+      "checkForUpdates": "Kiểm tra bản cập nhật",
+      "upToDate": "Bạn đang dùng phiên bản mới nhất",
+      "updateAvailable": "Có bản cập nhật v{{version}}"
+    },
     "mcp": {
       "allCategories": "Tất cả danh mục",
       "summary": "Đã bật {{installed}} / {{total}} preset",
@@ -500,11 +508,6 @@
       "rawInstructions": "SKILL.md gốc",
       "rawInstructionsEmpty": "Không có hướng dẫn gốc.",
       "detailDescription": "Chi tiết cho {{name}}."
-    },
-    "voice": {
-      "selectProvider": "Chon nha cung cap",
-      "configureProvider": "Cau hinh nha cung cap",
-      "languageAuto": "Tu dong"
     }
   },
   "chat": {
@@ -551,7 +554,22 @@
     "title": "Xóa cuộc trò chuyện này?",
     "description": "Không thể hoàn tác thao tác này.",
     "cancel": "Hủy",
-    "confirm": "Xóa"
+    "confirm": "Xóa",
+    "automationsDescription": "Cuộc trò chuyện này có các tự động hóa đã lên lịch. Xóa cuộc trò chuyện cũng sẽ xóa chúng.",
+    "moreAutomations": "+ {{count}} mục nữa",
+    "confirmWithAutomations": "Xóa trò chuyện và tự động hóa",
+    "schedule": {
+      "at": "{{time}}",
+      "every": "Mỗi {{duration}}",
+      "cron": "Cron {{expr}}",
+      "cronWithTz": "Cron {{expr}} · {{tz}}",
+      "unknown": "Lịch tùy chỉnh"
+    },
+    "next": {
+      "label": "Tiếp theo: {{time}}",
+      "disabled": "Đã tạm dừng",
+      "none": "Không có lần chạy tiếp theo"
+    }
   },
   "connection": {
     "idle": "Rảnh",
@@ -811,7 +829,6 @@
     },
     "scrollToBottom": "Cuộn xuống cuối",
     "loadEarlier": "Tải tin nhắn trước đó",
-    "forkedFromHistory": "Tách nhánh từ lịch sử",
     "promptNavigator": {
       "open": "Mở trình điều hướng prompt",
       "title": "Prompt",

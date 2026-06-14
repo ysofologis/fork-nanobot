@@ -5,6 +5,7 @@ import {
   deleteSession,
   fetchFilePreview,
   fetchCliApps,
+  fetchInstalledCliApps,
   fetchMcpPresets,
   fetchProviderModels,
   fetchSessionAutomations,
@@ -53,21 +54,6 @@ describe("webui API helpers", () => {
 
     expect(fetch).toHaveBeenCalledWith(
       "/api/sessions/websocket%3Achat-1/webui-thread",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer tok" },
-        credentials: "same-origin",
-      }),
-    );
-  });
-
-  it("passes pagination params when fetching a WebUI thread page", async () => {
-    await fetchWebuiThread("tok", "websocket:chat-1", {
-      limit: 120,
-      before: "abc+/=",
-    });
-
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/sessions/websocket%3Achat-1/webui-thread?limit=120&before=abc%2B%2F%3D",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
         credentials: "same-origin",
@@ -125,6 +111,17 @@ describe("webui API helpers", () => {
 
     expect(fetch).toHaveBeenCalledWith(
       "/api/sessions/websocket%3Achat-1/delete",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+      }),
+    );
+  });
+
+  it("passes the automation cascade flag when deleting a session", async () => {
+    await deleteSession("tok", "websocket:chat-1", { deleteAutomations: true });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/sessions/websocket%3Achat-1/delete?delete_automations=true",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),
@@ -358,6 +355,25 @@ describe("webui API helpers", () => {
     await runCliAppAction("tok", "install", "gimp");
     expect(fetch).toHaveBeenCalledWith(
       "/api/settings/cli-apps/install?name=gimp",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+      }),
+    );
+  });
+
+  it("reads installed CLI Apps without fetching the full catalog", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        apps: [],
+        installed_count: 0,
+        catalog_updated_at: null,
+      }),
+    } as Response);
+
+    await expect(fetchInstalledCliApps("tok")).resolves.toMatchObject({ apps: [] });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/settings/cli-apps?installed_only=1",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),

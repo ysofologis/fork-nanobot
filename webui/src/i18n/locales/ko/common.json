@@ -86,6 +86,7 @@
       "interface": "인터페이스",
       "ai": "AI",
       "system": "시스템",
+      "about": "정보",
       "status": "상태",
       "localPreferences": "로컬 환경설정",
       "presets": "프리셋",
@@ -391,6 +392,13 @@
       "unavailable": "사용 불가",
       "noDescription": "설명이 없습니다."
     },
+    "about": {
+      "version": "버전",
+      "checking": "확인 중...",
+      "checkForUpdates": "업데이트 확인",
+      "upToDate": "최신 버전입니다",
+      "updateAvailable": "업데이트 사용 가능 v{{version}}"
+    },
     "mcp": {
       "allCategories": "모든 카테고리",
       "summary": "프리셋 {{total}}개 중 {{installed}}개 활성화됨",
@@ -500,11 +508,6 @@
       "rawInstructions": "원본 SKILL.md",
       "rawInstructionsEmpty": "원본 지침이 없습니다.",
       "detailDescription": "{{name}} 세부 정보."
-    },
-    "voice": {
-      "selectProvider": "제공자 선택",
-      "configureProvider": "제공자 설정",
-      "languageAuto": "자동"
     }
   },
   "chat": {
@@ -551,7 +554,22 @@
     "title": "이 채팅을 삭제할까요?",
     "description": "이 작업은 되돌릴 수 없습니다.",
     "cancel": "취소",
-    "confirm": "삭제"
+    "confirm": "삭제",
+    "automationsDescription": "이 채팅에는 예약된 자동화가 있습니다. 채팅을 삭제하면 자동화도 함께 삭제됩니다.",
+    "moreAutomations": "+ {{count}}개 더",
+    "confirmWithAutomations": "채팅과 자동화 삭제",
+    "schedule": {
+      "at": "{{time}}",
+      "every": "{{duration}}마다",
+      "cron": "Cron {{expr}}",
+      "cronWithTz": "Cron {{expr}} · {{tz}}",
+      "unknown": "사용자 지정 일정"
+    },
+    "next": {
+      "label": "다음: {{time}}",
+      "disabled": "일시 중지됨",
+      "none": "다음 실행 없음"
+    }
   },
   "connection": {
     "idle": "대기 중",
@@ -811,7 +829,6 @@
     },
     "scrollToBottom": "맨 아래로 스크롤",
     "loadEarlier": "이전 메시지 불러오기",
-    "forkedFromHistory": "기록에서 분기됨",
     "promptNavigator": {
       "open": "프롬프트 탐색기 열기",
       "title": "프롬프트",

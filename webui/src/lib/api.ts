@@ -212,12 +212,55 @@ export async function deleteSession(
   token: string,
   key: string,
   base: string = "",
-): Promise<boolean> {
-  const body = await request<{ deleted: boolean }>(
-    `${base}/api/sessions/${encodeURIComponent(key)}/delete`,
+): Promise<SessionAutomationsPayload> {
+  return request<SessionAutomationsPayload>(
+    `${base}/api/sessions/${encodeURIComponent(key)}/automations`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchSkills(
+  token: string,
+  base: string = "",
+): Promise<SkillsPayload> {
+  return request<SkillsPayload>(
+    `${base}/api/webui/skills`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchSkillDetail(
+  token: string,
+  name: string,
+  base: string = "",
+): Promise<SkillDetail> {
+  return request<SkillDetail>(
+    `${base}/api/webui/skills/${encodeURIComponent(name)}`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function deleteSession(
+  token: string,
+  key: string,
+  optionsOrBase?: { deleteAutomations?: boolean } | string,
+  base: string = "",
+): Promise<SessionDeleteResult> {
+  const options = typeof optionsOrBase === "string" ? undefined : optionsOrBase;
+  const resolvedBase = typeof optionsOrBase === "string" ? optionsOrBase : base;
+  const query = new URLSearchParams();
+  if (options?.deleteAutomations) query.set("delete_automations", "true");
+  const suffix = query.toString() ? `?${query}` : "";
+  return request<SessionDeleteResult>(
+    `${resolvedBase}/api/sessions/${encodeURIComponent(key)}/delete${suffix}`,
     token,
   );
-  return body.deleted;
 }
 
 export async function fetchSettings(
@@ -244,26 +287,6 @@ export async function fetchSettingsUsage(
   );
 }
 
-export interface VersionCheckResult {
-  updateAvailable: {
-    currentVersion: string;
-    latestVersion: string;
-    pypiUrl?: string;
-  } | null;
-}
-
-export async function checkVersion(
-  token: string,
-  base: string = "",
-): Promise<VersionCheckResult> {
-  return request<VersionCheckResult>(
-    `${base}/api/settings/version-check`,
-    token,
-    undefined,
-    10_000,
-  );
-}
-
 export async function fetchWorkspaces(
   token: string,
   base: string = "",
@@ -282,6 +305,18 @@ export async function fetchCliApps(
 ): Promise<CliAppsPayload> {
   return request<CliAppsPayload>(
     `${base}/api/settings/cli-apps`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
+}
+
+export async function fetchInstalledCliApps(
+  token: string,
+  base: string = "",
+): Promise<CliAppsPayload> {
+  return request<CliAppsPayload>(
+    `${base}/api/settings/cli-apps?installed_only=1`,
     token,
     undefined,
     API_READ_TIMEOUT_MS,

@@ -86,6 +86,7 @@
       "interface": "Antarmuka",
       "ai": "AI",
       "system": "Sistem",
+      "about": "Tentang",
       "status": "Status",
       "localPreferences": "Preferensi lokal",
       "presets": "Preset",
@@ -391,6 +392,13 @@
       "unavailable": "Tidak tersedia",
       "noDescription": "Tidak ada deskripsi."
     },
+    "about": {
+      "version": "Versi",
+      "checking": "Memeriksa pembaruan...",
+      "checkForUpdates": "Periksa pembaruan",
+      "upToDate": "Anda sudah menggunakan versi terbaru",
+      "updateAvailable": "Pembaruan tersedia v{{version}}"
+    },
     "mcp": {
       "allCategories": "Semua kategori",
       "summary": "{{installed}} dari {{total}} preset diaktifkan",
@@ -500,11 +508,6 @@
       "rawInstructions": "SKILL.md mentah",
       "rawInstructionsEmpty": "Tidak ada instruksi mentah.",
       "detailDescription": "Detail untuk {{name}}."
-    },
-    "voice": {
-      "selectProvider": "Pilih penyedia",
-      "configureProvider": "Konfigurasi penyedia",
-      "languageAuto": "Auto"
     }
   },
   "chat": {
@@ -551,7 +554,22 @@
     "title": "Hapus obrolan ini?",
     "description": "Tindakan ini tidak dapat dibatalkan.",
     "cancel": "Batal",
-    "confirm": "Hapus"
+    "confirm": "Hapus",
+    "automationsDescription": "Obrolan ini memiliki automasi terjadwal. Menghapusnya juga akan menghapus automasi tersebut.",
+    "moreAutomations": "+ {{count}} lagi",
+    "confirmWithAutomations": "Hapus obrolan dan automasi",
+    "schedule": {
+      "at": "{{time}}",
+      "every": "Setiap {{duration}}",
+      "cron": "Cron {{expr}}",
+      "cronWithTz": "Cron {{expr}} · {{tz}}",
+      "unknown": "Jadwal khusus"
+    },
+    "next": {
+      "label": "Berikutnya: {{time}}",
+      "disabled": "Dijeda",
+      "none": "Tidak ada jadwal berikutnya"
+    }
   },
   "connection": {
     "idle": "Idle",
@@ -811,7 +829,6 @@
     },
     "scrollToBottom": "Gulir ke bawah",
     "loadEarlier": "Muat pesan sebelumnya",
-    "forkedFromHistory": "Fork dari riwayat",
     "promptNavigator": {
       "open": "Buka navigator prompt",
       "title": "Prompt",

@@ -11,7 +11,12 @@ import { StreamErrorNotice } from "@/components/thread/StreamErrorNotice";
 import { ThreadViewport, type ThreadViewportHandle } from "@/components/thread/ThreadViewport";
 import { useNanobotStream, type SendImage, type SendOptions } from "@/hooks/useNanobotStream";
 import { useSessionHistory } from "@/hooks/useSessions";
-import { fetchCliApps, fetchMcpPresets, fetchSettings, listSlashCommands } from "@/lib/api";
+import {
+  fetchInstalledCliApps,
+  fetchMcpPresets,
+  fetchSettings,
+  listSlashCommands,
+} from "@/lib/api";
 import {
   CLI_APPS_CHANGED_EVENT,
   installedCliAppsFromPayload,
@@ -630,18 +635,6 @@ export function ThreadShell({
     };
   }, [filePreviewPath]);
 
-  const handleForkFromMessage = useCallback(
-    async (beforeUserIndex: number) => {
-      if (!chatId || !onForkChat) return;
-      const forkedChatId = await onForkChat(chatId, beforeUserIndex);
-      if (!forkedChatId) return;
-      messageCacheRef.current.delete(forkedChatId);
-      appliedHistoryVersionRef.current.delete(forkedChatId);
-      pendingCanonicalHydrateRef.current.add(forkedChatId);
-    },
-    [chatId, onForkChat],
-  );
-
   const composer = (
     <>
       {streamError ? (
@@ -763,13 +756,7 @@ export function ThreadShell({
           showScrollToBottomButton={!!session}
           cliApps={cliApps}
           mcpPresets={mcpPresets}
-          forkBoundaryMessageCount={forkBoundaryMessageCount}
-          hasMoreBefore={hasMoreBefore}
-          loadingOlder={loadingOlder}
-          userMessageOffset={userMessageOffset}
-          onLoadOlder={loadOlder}
           onOpenFilePreview={historyKey ? handleOpenFilePreview : undefined}
-          onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
         />
       </div>
       {filePreviewPath && historyKey ? (
