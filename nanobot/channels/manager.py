@@ -128,6 +128,7 @@ class ChannelManager:
                         runtime_surface=self._webui_runtime_surface,
                         runtime_capabilities_overrides=self._webui_runtime_capabilities,
                         cron_service=self._cron_service,
+                        cron_pending_job_ids=self._webui_cron_pending_job_ids,
                         logger=logger,
                     )
                     kwargs["gateway"] = gateway
@@ -170,7 +171,7 @@ class ChannelManager:
         """Return whether progress (or tool-hints) may be sent to *channel_name*."""
         ch = self.channels.get(channel_name)
         if ch is None:
-            logger.warning("Progress check for unknown channel: {}", channel_name)
+            logger.debug("Progress check for unknown channel: {}", channel_name)
             return False
         return ch.send_tool_hints if tool_hint else ch.send_progress
 

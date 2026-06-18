@@ -88,13 +88,6 @@ class SafeFileHistory(FileHistory):
         super().store_string(_sanitize_surrogates(string))
 
 
-_WEBUI_TURN_META_KEY = "webui_turn_id"
-_WEBUI_MESSAGE_SOURCE_META_KEY = "_webui_message_source"
-_PROACTIVE_WEBUI_METADATA: ContextVar[dict[str, Any] | None] = ContextVar(
-    "proactive_webui_metadata",
-    default=None,
-)
-
 
 def _proactive_delivery_metadata(
     channel: str,
@@ -687,7 +680,7 @@ def serve(
     from loguru import logger
 
     from nanobot.api.server import create_app
-    from nanobot.bus.factory import create_bus
+    from nanobot.bus.queue import MessageBus
     from nanobot.providers.image_generation import image_gen_provider_configs
     from nanobot.session.manager import SessionManager
 
@@ -702,7 +695,7 @@ def serve(
     port = port if port is not None else api_cfg.port
     timeout = timeout if timeout is not None else api_cfg.timeout
     sync_workspace_templates(runtime_config.workspace_path)
-    bus = create_bus(runtime_config)
+    bus = MessageBus()
     session_manager = SessionManager(runtime_config.workspace_path)
     try:
         agent_loop = AgentLoop.from_config(
@@ -730,11 +723,9 @@ def serve(
     api_app = create_app(agent_loop, model_name=model_name, request_timeout=timeout)
 
     async def on_startup(_app):
-        await bus.start()
         await agent_loop._connect_mcp()
 
     async def on_cleanup(_app):
-        await bus.stop()
         await agent_loop.close_mcp()
 
     api_app.on_startup.append(on_startup)
@@ -977,7 +968,6 @@ def _run_gateway(
 ) -> None:
     """Shared gateway runtime; ``open_browser_url`` opens a tab once channels are up."""
     from nanobot.agent.tools.message import MessageTool
-    from nanobot.bus.factory import create_bus
     from nanobot.bus.queue import MessageBus
     from nanobot.bus.runtime_events import RuntimeEventBus
     from nanobot.channels.manager import ChannelManager
@@ -1212,66 +1202,7 @@ def _run_gateway(
             job.id,
             reason,
         )
-
-        cron_tool = agent.tools.get("cron")
-        cron_token = None
-        if isinstance(cron_tool, CronTool):
-            cron_token = cron_tool.set_cron_context(True)
-
-        message_record_token = None
-        if isinstance(message_tool, MessageTool):
-            message_record_token = message_tool.set_record_channel_delivery(True)
-
-        proactive_webui_metadata = _proactive_delivery_metadata(
-            "websocket",
-            None,
-            turn_seed=f"cron:{job.id}",
-            source_label=job.name,
-        )
-        proactive_token = _PROACTIVE_WEBUI_METADATA.set(proactive_webui_metadata)
-
-        try:
-            resp = await agent.process_direct(
-                reminder_note,
-                session_key=f"cron:{job.id}",
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to or "direct",
-                on_progress=_silent,
-            )
-        finally:
-            _PROACTIVE_WEBUI_METADATA.reset(proactive_token)
-            if isinstance(cron_tool, CronTool) and cron_token is not None:
-                cron_tool.reset_cron_context(cron_token)
-            if isinstance(message_tool, MessageTool) and message_record_token is not None:
-                message_tool.reset_record_channel_delivery(message_record_token)
-
-        response = resp.content if resp else ""
-
-        if job.payload.deliver and isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
-            return response
-
-        if job.payload.deliver and job.payload.to and response:
-            should_notify = await evaluate_response(
-                response, reminder_note, agent.provider, agent.model,
-            )
-            if should_notify:
-                proactive_metadata = _proactive_delivery_metadata(
-                    job.payload.channel or "cli",
-                    job.payload.channel_meta,
-                    turn_seed=f"cron:{job.id}",
-                    source_label=job.name,
-                )
-                await _deliver_to_channel(
-                    OutboundMessage(
-                        channel=job.payload.channel or "cli",
-                        chat_id=job.payload.to,
-                        content=response,
-                        metadata=proactive_metadata,
-                    ),
-                    record=True,
-                    session_key=job.payload.session_key,
-                )
-        return response
+        raise CronJobSkippedError(reason)
 
     cron.on_job = on_cron_job
 
@@ -1419,7 +1350,6 @@ def _run_gateway(
 
     async def run():
         try:
-            await bus.start()
             await cron.start()
             tasks = [
                 agent.run(),
@@ -1438,7 +1368,6 @@ def _run_gateway(
             console.print("\n[red]Error: Gateway crashed unexpectedly[/red]")
             console.print(traceback.format_exc())
         finally:
-            await bus.stop()
             await agent.close_mcp()
             cron.stop()
             agent.stop()
@@ -1470,14 +1399,14 @@ def agent(
     """Interact with the agent directly."""
     from loguru import logger
 
-    from nanobot.bus.factory import create_bus
+    from nanobot.bus.queue import MessageBus
     from nanobot.cron.service import CronService
     from nanobot.providers.image_generation import image_gen_provider_configs
 
     config = _load_runtime_config(config, workspace)
     sync_workspace_templates(config.workspace_path)
 
-    bus = create_bus(config)
+    bus = MessageBus()
 
     # Preserve existing single-workspace installs, but keep custom workspaces clean.
     if is_default_workspace(config.workspace_path):
@@ -1597,7 +1526,6 @@ def agent(
             signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
         async def run_interactive():
-            await bus.start()
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
             turn_done.set()
@@ -1716,7 +1644,6 @@ def agent(
                 outbound_task.cancel()
                 await asyncio.gather(bus_task, outbound_task, return_exceptions=True)
                 await agent_loop.close_mcp()
-                await bus.stop()
 
         asyncio.run(run_interactive())
 
@@ -1859,7 +1786,6 @@ def status():
 
     console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
     console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
-    console.print(f"bot-id: {config.bus.agent_id or '[dim]not set[/dim]'}")
 
     if config_path.exists():
         from nanobot.providers.registry import PROVIDERS
@@ -2059,4 +1985,3 @@ def _login_github_copilot() -> None:
 
 if __name__ == "__main__":
     app()
-

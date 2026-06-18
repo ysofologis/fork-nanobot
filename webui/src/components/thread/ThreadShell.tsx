@@ -270,7 +270,7 @@ export function ThreadShell({
   const cliApps = useInstalledSettingItems({
     token,
     eventName: CLI_APPS_CHANGED_EVENT,
-    fetchPayload: fetchCliApps,
+    fetchPayload: fetchInstalledCliApps,
     isPayload: isCliAppsPayload,
     selectItems: installedCliAppsFromPayload,
   });
@@ -635,6 +635,18 @@ export function ThreadShell({
     };
   }, [filePreviewPath]);
 
+  const handleForkFromMessage = useCallback(
+    async (beforeUserIndex: number) => {
+      if (!chatId || !onForkChat) return;
+      const forkedChatId = await onForkChat(chatId, beforeUserIndex);
+      if (!forkedChatId) return;
+      messageCacheRef.current.delete(forkedChatId);
+      appliedHistoryVersionRef.current.delete(forkedChatId);
+      pendingCanonicalHydrateRef.current.add(forkedChatId);
+    },
+    [chatId, onForkChat],
+  );
+
   const composer = (
     <>
       {streamError ? (
@@ -713,7 +725,7 @@ export function ThreadShell({
     </div>
   ) : (
     <div className="flex w-full flex-col items-center text-center animate-in fade-in-0 slide-in-from-bottom-2 duration-500">
-      <h1 className="text-balance text-[40px] font-normal leading-tight tracking-[-0.045em] text-foreground sm:text-[48px]">
+      <h1 className="max-w-[30rem] text-balance text-[34px] font-normal leading-[1.08] tracking-normal text-foreground sm:text-[48px] sm:leading-tight">
         {t(heroGreetingKey)}
       </h1>
     </div>
@@ -756,7 +768,13 @@ export function ThreadShell({
           showScrollToBottomButton={!!session}
           cliApps={cliApps}
           mcpPresets={mcpPresets}
+          forkBoundaryMessageCount={forkBoundaryMessageCount}
+          hasMoreBefore={hasMoreBefore}
+          loadingOlder={loadingOlder}
+          userMessageOffset={userMessageOffset}
+          onLoadOlder={loadOlder}
           onOpenFilePreview={historyKey ? handleOpenFilePreview : undefined}
+          onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
         />
       </div>
       {filePreviewPath && historyKey ? (

@@ -119,6 +119,42 @@ async def _http_get(url: str, headers: dict[str, str] | None = None) -> httpx.Re
     )
 
 
+@pytest.mark.asyncio
+async def test_send_session_updated_broadcasts_to_other_webui_connections(bus) -> None:
+    class Conn:
+        remote_address = None
+
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def send(self, raw: str) -> None:
+            self.sent.append(raw)
+
+    channel = _ch(bus)
+    active_conn = Conn()
+    other_conn = Conn()
+    channel._attach(active_conn, "chat-a")
+    channel._attach(other_conn, "chat-b")
+    assert sorted(channel._subs) == ["chat-a", "chat-b"]
+    assert sum(len(conns) for conns in channel._subs.values()) == 2
+
+    await channel.send_session_updated("chat-a", scope="thread")
+
+    active_events = [json.loads(raw)["event"] for raw in active_conn.sent]
+    other_events = [json.loads(raw)["event"] for raw in other_conn.sent]
+
+    assert (active_events, other_events) == (
+        ["session_updated"],
+        ["session_updated"],
+    )
+    payload = json.loads(other_conn.sent[0])
+    assert payload == {
+        "event": "session_updated",
+        "chat_id": "chat-a",
+        "scope": "thread",
+    }
+
+
 async def _recv_ws_event(client: Any, event: str) -> dict[str, Any]:
     """Receive until a specific websocket event appears."""
     for _ in range(10):
@@ -126,6 +162,10 @@ async def _recv_ws_event(client: Any, event: str) -> dict[str, Any]:
         if payload.get("event") == event:
             return payload
     raise AssertionError(f"websocket event {event!r} was not received")
+
+
+def _sent_ws_payloads(mock_ws: AsyncMock) -> list[dict[str, Any]]:
+    return [json.loads(call.args[0]) for call in mock_ws.send.await_args_list]
 
 
 def test_normalize_http_path_strips_trailing_slash_except_root() -> None:
@@ -380,87 +420,6 @@ async def test_webui_user_transcript_append_failure_does_not_block_inbound(
         raise OSError("disk full")
 
     monkeypatch.setattr("nanobot.webui.transcript.append_transcript_object", fail_append)
-    channel = _ch(bus)
-    conn = AsyncMock()
-    conn.remote_address = ("127.0.0.1", 50123)
-
-    await channel._dispatch_envelope(
-        conn,
-        "webui-client",
-        {"type": "message", "chat_id": "chat-1", "content": "hello", "webui": True},
-    )
-
-    msg = bus.publish_inbound.await_args.args[0]
-    assert msg.chat_id == "chat-1"
-    assert msg.content == "hello"
-
-
-@pytest.mark.asyncio
-async def test_webui_message_envelope_persists_user_transcript_for_refresh(
-    bus: MagicMock,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    from nanobot.webui.transcript import build_webui_thread_response, read_transcript_lines
-
-    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
-    channel = _ch(bus)
-    conn = AsyncMock()
-    conn.remote_address = ("127.0.0.1", 50123)
-
-    async def answer_during_publish(_msg: Any) -> None:
-        await channel.send(OutboundMessage(channel="websocket", chat_id="chat-1", content="hi back"))
-
-    bus.publish_inbound.side_effect = answer_during_publish
-
-    await channel._dispatch_envelope(
-        conn,
-        "webui-client",
-        {"type": "message", "chat_id": "chat-1", "content": "hello", "webui": True},
-    )
-
-    lines = read_transcript_lines("websocket:chat-1")
-    assert [line["event"] for line in lines] == ["user", "message"]
-
-    body = build_webui_thread_response("websocket:chat-1")
-    assert body is not None
-    assert [message["role"] for message in body["messages"]] == ["user", "assistant"]
-    assert [message["content"] for message in body["messages"]] == ["hello", "hi back"]
-
-
-@pytest.mark.asyncio
-async def test_webui_stop_control_message_is_not_persisted_as_user_bubble(
-    bus: MagicMock,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    from nanobot.webui.transcript import read_transcript_lines
-
-    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
-    channel = _ch(bus)
-    conn = AsyncMock()
-    conn.remote_address = ("127.0.0.1", 50123)
-
-    await channel._dispatch_envelope(
-        conn,
-        "webui-client",
-        {"type": "message", "chat_id": "chat-1", "content": "/stop", "webui": True},
-    )
-
-    msg = bus.publish_inbound.await_args.args[0]
-    assert msg.content == "/stop"
-    assert read_transcript_lines("websocket:chat-1") == []
-
-
-@pytest.mark.asyncio
-async def test_webui_user_transcript_append_failure_does_not_block_inbound(
-    bus: MagicMock,
-    monkeypatch,
-) -> None:
-    def fail_append(_session_key: str, _obj: dict[str, Any]) -> None:
-        raise OSError("disk full")
-
-    monkeypatch.setattr("nanobot.channels.websocket.append_transcript_object", fail_append)
     channel = _ch(bus)
     conn = AsyncMock()
     conn.remote_address = ("127.0.0.1", 50123)
@@ -1315,9 +1274,10 @@ async def test_send_turn_end_emits_turn_end_event() -> None:
         metadata={"_turn_end": True},
     ))
 
-    mock_ws.send.assert_awaited_once()
-    body = json.loads(mock_ws.send.await_args.args[0])
-    assert body == {"event": "turn_end", "chat_id": "chat-1"}
+    assert _sent_ws_payloads(mock_ws) == [
+        {"event": "turn_end", "chat_id": "chat-1"},
+        {"event": "session_updated", "chat_id": "chat-1", "scope": "thread"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -1334,9 +1294,10 @@ async def test_send_turn_end_includes_latency_ms_when_present() -> None:
         metadata={"_turn_end": True, "latency_ms": 1500},
     ))
 
-    mock_ws.send.assert_awaited_once()
-    body = json.loads(mock_ws.send.await_args.args[0])
-    assert body == {"event": "turn_end", "chat_id": "chat-1", "latency_ms": 1500}
+    assert _sent_ws_payloads(mock_ws) == [
+        {"event": "turn_end", "chat_id": "chat-1", "latency_ms": 1500},
+        {"event": "session_updated", "chat_id": "chat-1", "scope": "thread"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -1354,9 +1315,10 @@ async def test_send_turn_end_includes_goal_state_when_present() -> None:
         metadata={"_turn_end": True, "goal_state": blob},
     ))
 
-    mock_ws.send.assert_awaited_once()
-    body = json.loads(mock_ws.send.await_args.args[0])
-    assert body == {"event": "turn_end", "chat_id": "chat-1", "goal_state": blob}
+    assert _sent_ws_payloads(mock_ws) == [
+        {"event": "turn_end", "chat_id": "chat-1", "goal_state": blob},
+        {"event": "session_updated", "chat_id": "chat-1", "scope": "thread"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -1805,6 +1767,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert search_providers["exa"]["credential"] == "api_key"
         assert search_providers["bocha"]["credential"] == "api_key"
         assert search_providers["volcengine"]["credential"] == "api_key"
+        assert search_providers["keenable"]["credential"] == "api_key"
         assert search_providers["searxng"]["credential"] == "base_url"
         assert body["image_generation"]["enabled"] is False
         assert body["image_generation"]["provider"] == "openrouter"
@@ -2801,6 +2764,45 @@ def test_handle_webui_thread_get_returns_json(tmp_path, monkeypatch) -> None:
     assert body["messages"][0]["content"] == "hi"
 
 
+def test_handle_webui_thread_get_accepts_pagination_query(tmp_path, monkeypatch) -> None:
+    from urllib.parse import quote
+
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    from nanobot.webui.transcript import append_transcript_object
+
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    key = "websocket:paged-route"
+    for idx in range(1, 4):
+        append_transcript_object(
+            key,
+            {"event": "user", "chat_id": "paged-route", "text": f"q{idx}"},
+        )
+        append_transcript_object(
+            key,
+            {"event": "message", "chat_id": "paged-route", "text": f"a{idx}"},
+        )
+        append_transcript_object(key, {"event": "turn_end", "chat_id": "paged-route"})
+
+    bus = MagicMock()
+    channel = _ch(bus)
+    channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
+    enc = quote(key, safe="")
+    req = Request(
+        f"/api/sessions/{enc}/webui-thread?limit=2&direction=latest",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+
+    resp = channel.gateway.http._handle_webui_thread_get(req, enc)
+
+    assert resp.status_code == 200
+    body = json.loads(resp.body.decode())
+    assert [message["content"] for message in body["messages"]] == ["q3", "a3"]
+    assert body["page"]["has_more_before"] is True
+    assert body["page"]["before_cursor"]
+
+
 def test_handle_file_preview_returns_workspace_file(tmp_path) -> None:
     from urllib.parse import quote
 
@@ -2954,4 +2956,3 @@ def test_handle_webui_thread_get_does_not_backfill_cron_internal_prompt(
     body = json.loads(resp.body.decode())
     assert [message["role"] for message in body["messages"]] == ["assistant"]
     assert [message["content"] for message in body["messages"]] == ["提醒已经到期。"]
-

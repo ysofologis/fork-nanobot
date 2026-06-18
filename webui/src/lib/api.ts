@@ -1,4 +1,6 @@
 import type {
+  AutomationsPayload,
+  AutomationUpdatePayload,
   ChatSummary,
   CliAppsPayload,
   FilePreviewPayload,
@@ -9,6 +11,7 @@ import type {
   NetworkSafetySettingsUpdate,
   ProviderModelsPayload,
   ProviderSettingsUpdate,
+  SessionDeleteResult,
   SessionAutomationsPayload,
   SettingsPayload,
   SettingsUpdate,
@@ -84,6 +87,10 @@ function mcpValuesHeader(values: Record<string, unknown>): HeadersInit | undefin
   });
   if (!Object.keys(payload).length) return undefined;
   return { "X-Nanobot-MCP-Values": JSON.stringify(payload) };
+}
+
+function automationValuesHeader(values: AutomationUpdatePayload): HeadersInit {
+  return { "X-Nanobot-Automation-Values": encodeURIComponent(JSON.stringify(values)) };
 }
 
 function splitKey(key: string): { channel: string; chatId: string } {
@@ -183,40 +190,48 @@ export async function fetchSessionAutomations(
   );
 }
 
-export async function fetchSkills(
+export async function fetchAutomations(
   token: string,
   base: string = "",
-): Promise<SkillsPayload> {
-  return request<SkillsPayload>(
-    `${base}/api/webui/skills`,
+): Promise<AutomationsPayload> {
+  return request<AutomationsPayload>(
+    `${base}/api/webui/automations`,
     token,
     undefined,
     API_READ_TIMEOUT_MS,
   );
 }
 
-export async function fetchSkillDetail(
+export async function runAutomationAction(
   token: string,
-  name: string,
+  action: "enable" | "disable" | "delete" | "run",
+  id: string,
   base: string = "",
-): Promise<SkillDetail> {
-  return request<SkillDetail>(
-    `${base}/api/webui/skills/${encodeURIComponent(name)}`,
+): Promise<AutomationsPayload> {
+  const query = new URLSearchParams();
+  query.set("id", id);
+  return request<AutomationsPayload>(
+    `${base}/api/webui/automations/${action}?${query}`,
     token,
     undefined,
     API_READ_TIMEOUT_MS,
   );
 }
 
-export async function deleteSession(
+export async function updateAutomation(
   token: string,
-  key: string,
+  id: string,
+  values: AutomationUpdatePayload,
   base: string = "",
-): Promise<SessionAutomationsPayload> {
-  return request<SessionAutomationsPayload>(
-    `${base}/api/sessions/${encodeURIComponent(key)}/automations`,
+): Promise<AutomationsPayload> {
+  const query = new URLSearchParams();
+  query.set("id", id);
+  return request<AutomationsPayload>(
+    `${base}/api/webui/automations/update?${query}`,
     token,
-    undefined,
+    {
+      headers: automationValuesHeader(values),
+    },
     API_READ_TIMEOUT_MS,
   );
 }
@@ -284,6 +299,26 @@ export async function fetchSettingsUsage(
     token,
     undefined,
     API_READ_TIMEOUT_MS,
+  );
+}
+
+export interface VersionCheckResult {
+  updateAvailable: {
+    currentVersion: string;
+    latestVersion: string;
+    pypiUrl?: string;
+  } | null;
+}
+
+export async function checkVersion(
+  token: string,
+  base: string = "",
+): Promise<VersionCheckResult> {
+  return request<VersionCheckResult>(
+    `${base}/api/settings/version-check`,
+    token,
+    undefined,
+    10_000,
   );
 }
 
