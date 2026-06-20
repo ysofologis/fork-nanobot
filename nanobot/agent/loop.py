@@ -897,8 +897,14 @@ class AgentLoop:
                         )
                         await self.bus.outbound.put(reply)
                         continue
-                    # Incoming forward (not a reply) — show source prefix,
-                    # then fall through to regular message processing.
+                    # Incoming forward (not a reply) — mark for reply routing
+                    # and fall through to regular message processing.
+                    # The response will be sent back to the sender via the bus
+                    # instead of going to the original channel.
+                    meta = dict(msg.metadata or {})
+                    meta["_agent_forward"] = True
+                    meta["_agent_reply_target"] = msg.sender
+                    msg = dataclasses.replace(msg, metadata=meta)
                     notification = OutboundMessage(
                         channel=msg.channel or "cli",
                         chat_id=msg.chat_id or "",
@@ -1069,7 +1075,24 @@ class AgentLoop:
                     completed_channel = msg.channel
                     completed_chat_id = msg.chat_id
                     if response is not None:
-                        await self.bus.publish_outbound(response)
+                        agent_fwd = (msg.metadata or {}).get("_agent_forward")
+                        if agent_fwd:
+                            reply_target = (msg.metadata or {}).get("_agent_reply_target")
+                            if reply_target:
+                                agent_reply = InboundMessage(
+                                    channel=msg.channel,
+                                    sender_id=msg.sender_id,
+                                    chat_id=msg.chat_id,
+                                    content=response.content,
+                                    sender=self.bus.agent_id,
+                                    metadata={
+                                        "target_agent": reply_target,
+                                        "_agent_reply": True,
+                                    },
+                                )
+                                await self.bus.publish_agent_message(agent_reply)
+                        else:
+                            await self.bus.publish_outbound(response)
                         completed_channel = response.channel
                         completed_chat_id = response.chat_id
                     elif msg.channel == "cli":

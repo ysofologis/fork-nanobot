@@ -680,7 +680,7 @@ def serve(
     from loguru import logger
 
     from nanobot.api.server import create_app
-    from nanobot.bus.queue import MessageBus
+    from nanobot.bus.factory import create_bus
     from nanobot.providers.image_generation import image_gen_provider_configs
     from nanobot.session.manager import SessionManager
 
@@ -695,7 +695,7 @@ def serve(
     port = port if port is not None else api_cfg.port
     timeout = timeout if timeout is not None else api_cfg.timeout
     sync_workspace_templates(runtime_config.workspace_path)
-    bus = MessageBus()
+    bus = create_bus(runtime_config)
     session_manager = SessionManager(runtime_config.workspace_path)
     try:
         agent_loop = AgentLoop.from_config(
@@ -723,9 +723,11 @@ def serve(
     api_app = create_app(agent_loop, model_name=model_name, request_timeout=timeout)
 
     async def on_startup(_app):
+        await bus.start()
         await agent_loop._connect_mcp()
 
     async def on_cleanup(_app):
+        await bus.stop()
         await agent_loop.close_mcp()
 
     api_app.on_startup.append(on_startup)
@@ -968,7 +970,7 @@ def _run_gateway(
 ) -> None:
     """Shared gateway runtime; ``open_browser_url`` opens a tab once channels are up."""
     from nanobot.agent.tools.message import MessageTool
-    from nanobot.bus.queue import MessageBus
+    from nanobot.bus.factory import create_bus
     from nanobot.bus.runtime_events import RuntimeEventBus
     from nanobot.channels.manager import ChannelManager
     from nanobot.cron.bound_runner import run_bound_cron_job
@@ -985,7 +987,7 @@ def _run_gateway(
 
     console.print(f"{__logo__} Starting nanobot gateway version {__version__} on port {port}...")
     sync_workspace_templates(config.workspace_path)
-    bus = MessageBus()
+    bus = create_bus(config)
     runtime_events = RuntimeEventBus()
     try:
         provider_snapshot = build_provider_snapshot(config)
@@ -1350,6 +1352,7 @@ def _run_gateway(
 
     async def run():
         try:
+            await bus.start()
             await cron.start()
             tasks = [
                 agent.run(),
@@ -1368,6 +1371,7 @@ def _run_gateway(
             console.print("\n[red]Error: Gateway crashed unexpectedly[/red]")
             console.print(traceback.format_exc())
         finally:
+            await bus.stop()
             await agent.close_mcp()
             cron.stop()
             agent.stop()
@@ -1399,14 +1403,14 @@ def agent(
     """Interact with the agent directly."""
     from loguru import logger
 
-    from nanobot.bus.queue import MessageBus
+    from nanobot.bus.factory import create_bus
     from nanobot.cron.service import CronService
     from nanobot.providers.image_generation import image_gen_provider_configs
 
     config = _load_runtime_config(config, workspace)
     sync_workspace_templates(config.workspace_path)
 
-    bus = MessageBus()
+    bus = create_bus(config)
 
     # Preserve existing single-workspace installs, but keep custom workspaces clean.
     if is_default_workspace(config.workspace_path):
@@ -1526,6 +1530,7 @@ def agent(
             signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
         async def run_interactive():
+            await bus.start()
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
             turn_done.set()
@@ -1644,6 +1649,7 @@ def agent(
                 outbound_task.cancel()
                 await asyncio.gather(bus_task, outbound_task, return_exceptions=True)
                 await agent_loop.close_mcp()
+                await bus.stop()
 
         asyncio.run(run_interactive())
 
