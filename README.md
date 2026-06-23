@@ -426,6 +426,8 @@ Visit [`http://127.0.0.1:8765`](http://127.0.0.1:8765) in your browser. To open 
 
 The WebUI is served by the WebSocket channel on port `8765` by default. The gateway's `18790` port is for the health endpoint, not the browser UI.
 
+The WebUI is served by the WebSocket channel on port `8765` by default. The gateway's `18790` port is for the health endpoint, not the browser UI.
+
 > [!TIP]
 > Working on the WebUI itself? Check out [`webui/README.md`](./webui/README.md) for the source-tree, Vite dev server, build, and test workflow.
 

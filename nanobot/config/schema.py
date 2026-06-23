@@ -341,9 +341,35 @@ class ToolsConfig(Base):
     ssrf_whitelist: list[str] = Field(default_factory=list)  # CIDR ranges to exempt from SSRF blocking (e.g. ["100.64.0.0/10"] for Tailscale)
 
 
+class BusConfig(Base):
+    """Message bus backend configuration.
+
+    Controls how the agent and channels exchange messages.
+    ``local`` (default) uses in-process ``asyncio.Queue``.
+    ``nats`` uses NATS pub/sub for cross-instance communication.
+    ``redis`` uses Redis pub/sub for cross-instance communication.
+    """
+
+    backend: Literal["local", "nats", "redis"] = "nats"
+    url: str = ""
+    agent_id: str = ""
+
+    # NATS-specific
+    subject_prefix: str = "nanobot.agent"
+
+    # Redis-specific
+    channel_prefix: str = "nanobot:agent"
+
+    # Legacy Redis Stream fields (kept for backward compat)
+    stream_prefix: str = "nanobot:bus"
+    consumer_group: str = "nanobot-consumers"
+    read_block_ms: int = 2000
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
+    bus: BusConfig = Field(default_factory=BusConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)

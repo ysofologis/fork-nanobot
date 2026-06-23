@@ -86,6 +86,12 @@ export function deriveWsUrl(
   if (typeof window === "undefined") {
     return `ws://127.0.0.1:8765${path}${query}`;
   }
+  if (window.location.port === "5173") {
+    const host = window.location.hostname.includes(":")
+      ? `[${window.location.hostname}]`
+      : window.location.hostname;
+    return `ws://${host}:8765${path}${query}`;
+  }
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
   const host = window.location.host;
   return `${scheme}://${host}${path}${query}`;

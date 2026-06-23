@@ -906,6 +906,14 @@ class WebSocketChannel(BaseChannel):
                     scope=scope if isinstance(scope, str) else None,
                 )
             return
+        if msg.metadata.get("_session_updated"):
+            if conns:
+                scope = msg.metadata.get("_session_update_scope")
+                await self.send_session_updated(
+                    msg.chat_id,
+                    scope=scope if isinstance(scope, str) else None,
+                )
+            return
         if msg.metadata.get("_file_edit_events"):
             edits = msg.metadata.get("_file_edit_events")
             await self.send_file_edit_events(

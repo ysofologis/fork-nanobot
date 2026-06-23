@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import os
+import re
 import time
 from contextlib import AsyncExitStack, nullcontext, suppress
 from dataclasses import dataclass, field
@@ -269,7 +270,7 @@ class AgentLoop:
         self._last_usage: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
 
-        self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
+        self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills, agent_id=bus.agent_id)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         # One file-read/write tracker per logical session. The tool registry is
@@ -622,6 +623,7 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=self._runtime_chat_id(msg),
             sender_id=msg.sender_id,
+            agent_id=self.bus.agent_id,
             session_summary=pending_summary,
             session_metadata=session.metadata,
             workspace=scope.project_path,
@@ -880,11 +882,45 @@ class AgentLoop:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
             except asyncio.TimeoutError:
-                self.auto_compact.check_expired(
-                    self._schedule_background,
-                    active_session_keys=self._pending_queues.keys(),
-                )
-                continue
+                # No user message arrived — check for agent-to-agent messages
+                # on the timeout fallback.
+                try:
+                    msg = self.bus.agent_inbound.get_nowait()
+                    target = (msg.metadata or {}).get("target_agent")
+                    if target != self.bus.agent_id and target != "*":
+                        logger.debug(
+                            "Dropping misrouted agent message for %s (we are %s)",
+                            target, self.bus.agent_id,
+                        )
+                        continue
+                    if msg.metadata and msg.metadata.get("_agent_reply"):
+                        reply = OutboundMessage(
+                            channel=msg.channel or "cli",
+                            chat_id=msg.chat_id or "",
+                            content=f"<{msg.sender}| {msg.content}",
+                        )
+                        await self.bus.outbound.put(reply)
+                        continue
+                    # Incoming forward (not a reply) — mark for reply routing
+                    # and fall through to regular message processing.
+                    # The response will be sent back to the sender via the bus
+                    # instead of going to the original channel.
+                    meta = dict(msg.metadata or {})
+                    meta["_agent_forward"] = True
+                    meta["_agent_reply_target"] = msg.sender
+                    msg = dataclasses.replace(msg, metadata=meta)
+                    notification = OutboundMessage(
+                        channel=msg.channel or "cli",
+                        chat_id=msg.chat_id or "",
+                        content=f"<{msg.sender}| {msg.content}",
+                    )
+                    await self.bus.outbound.put(notification)
+                except asyncio.QueueEmpty:
+                    self.auto_compact.check_expired(
+                        self._schedule_background,
+                        active_session_keys=self._pending_queues.keys(),
+                    )
+                    continue
             except asyncio.CancelledError:
                 # Preserve real task cancellation so shutdown can complete cleanly.
                 # Only ignore non-task CancelledError signals that may leak from integrations.
@@ -899,6 +935,37 @@ class AgentLoop:
             effective_key = self._effective_session_key(msg)
             if await agent_context.handle_runtime_control(self, msg, self.tools):
                 continue
+            raw = msg.content.strip()
+
+            # Agent routing: |bot-name> content → forward to bot-name via bus
+            # Also: |*> content → broadcast to all agents
+            AGENT_ROUTING_RE = re.compile(r"^\|([\w][\w-]*|\*)\>\s*(.*)", re.DOTALL)
+            if m := AGENT_ROUTING_RE.match(raw):
+                target_agent = m.group(1)
+                forwarded_content = m.group(2).strip()
+                if target_agent != self.bus.agent_id:
+                    # Forward to target agent(s) via the bus
+                    routing_msg = InboundMessage(
+                        channel=msg.channel,
+                        sender_id=msg.sender_id,
+                        chat_id=msg.chat_id,
+                        content=forwarded_content or "...",
+                        sender=self.bus.agent_id,
+                        metadata={"target_agent": target_agent},
+                    )
+                    await self.bus.publish_agent_message(routing_msg)
+                    # Confirm back to sender
+                    confirm = OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=f"Forwarded to *{target_agent}*: {forwarded_content}",
+                        reply_to=msg.sender_id,
+                    )
+                    await self.bus.outbound.put(confirm)
+                    continue
+                # Addressed to this agent — strip prefix and process normally
+                raw = forwarded_content
+
             if self.commands.is_priority(raw):
                 await self._dispatch_command_inline(
                     msg, effective_key, raw,
@@ -1012,7 +1079,24 @@ class AgentLoop:
                     completed_channel = msg.channel
                     completed_chat_id = msg.chat_id
                     if response is not None:
-                        await self.bus.publish_outbound(response)
+                        agent_fwd = (msg.metadata or {}).get("_agent_forward")
+                        if agent_fwd:
+                            reply_target = (msg.metadata or {}).get("_agent_reply_target")
+                            if reply_target:
+                                agent_reply = InboundMessage(
+                                    channel=msg.channel,
+                                    sender_id=msg.sender_id,
+                                    chat_id=msg.chat_id,
+                                    content=response.content,
+                                    sender=self.bus.agent_id,
+                                    metadata={
+                                        "target_agent": reply_target,
+                                        "_agent_reply": True,
+                                    },
+                                )
+                                await self.bus.publish_agent_message(agent_reply)
+                        else:
+                            await self.bus.publish_outbound(response)
                         completed_channel = response.channel
                         completed_chat_id = response.chat_id
                     elif msg.channel == "cli":
@@ -1189,6 +1273,7 @@ class AgentLoop:
             chat_id=chat_id,
             current_role=current_role,
             sender_id=msg.sender_id,
+            agent_id=self.bus.agent_id,
             session_summary=pending,
             session_metadata=session.metadata,
             workspace=workspace_scope.project_path,
@@ -1860,3 +1945,4 @@ class AgentLoop:
         finally:
             await self._runtime_events().run_status_changed(msg, session_key, "idle")
             self._runtime_events().clear_turn(session_key)
+

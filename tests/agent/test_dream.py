@@ -119,6 +119,14 @@ class TestBuildDreamPrompt:
         assert "[correction]: replace the older conflicting fact" in prompt
         assert "Always strip these bracketed tags from saved memory content" in prompt
 
+    def test_returns_prompt_with_history(self, store):
+        store.append_history("hello")
+        result = store.build_dream_prompt()
+        assert result is not None
+        prompt, cursor = result
+        assert cursor > 0
+        assert "## Conversation History" in prompt
+        assert "hello" in prompt
 
 class TestDreamTools:
     def test_dream_tools_are_restricted_to_file_edits(self, store):

@@ -1357,3 +1357,4 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
                     "using its workspace-relative path, for example `![diagram](diagram.png)`."
                 )
         return _truncate("\n".join(output))
+

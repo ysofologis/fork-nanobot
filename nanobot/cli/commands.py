@@ -5,10 +5,13 @@ import os
 import select
 import signal
 import sys
+import uuid
 from collections.abc import Callable
 from contextlib import nullcontext, suppress
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
+from prompt_toolkit.enums import EditingMode
 
 # Force UTF-8 encoding for Windows console
 if sys.platform == "win32":
@@ -85,6 +88,25 @@ class SafeFileHistory(FileHistory):
     def store_string(self, string: str) -> None:
         super().store_string(_sanitize_surrogates(string))
 
+
+
+def _proactive_delivery_metadata(
+    channel: str,
+    metadata: dict[str, Any] | None,
+    *,
+    turn_seed: str,
+    source_label: str | None = None,
+) -> dict[str, Any]:
+    """Return channel metadata for a fresh proactive delivery turn."""
+    out = dict(metadata or {})
+    out.pop(_WEBUI_TURN_META_KEY, None)
+    if channel == "websocket":
+        out[_WEBUI_TURN_META_KEY] = f"{turn_seed}:{uuid.uuid4().hex}"
+        source: dict[str, str] = {"kind": "cron"}
+        if source_label:
+            source["label"] = source_label
+        out[_WEBUI_MESSAGE_SOURCE_META_KEY] = source
+    return out
 
 app = typer.Typer(
     name="nanobot",
@@ -191,7 +213,10 @@ def _init_prompt_session() -> None:
     _PROMPT_SESSION = PromptSession(
         history=SafeFileHistory(str(history_file)),
         enable_open_in_editor=False,
-        multiline=False,  # Enter submits (single line mode)
+        multiline=True,  # Enter submits (single line mode)
+        vi_mode=True,
+        editing_mode=EditingMode.VI,     
+        prompt_continuation=lambda width, line_no, x: f"{line_no:>3}│ "  # ← line number
     )
 
 
@@ -656,7 +681,7 @@ def serve(
     from loguru import logger
 
     from nanobot.api.server import create_app
-    from nanobot.bus.queue import MessageBus
+    from nanobot.bus.factory import create_bus
     from nanobot.providers.image_generation import image_gen_provider_configs
     from nanobot.session.manager import SessionManager
 
@@ -671,7 +696,7 @@ def serve(
     port = port if port is not None else api_cfg.port
     timeout = timeout if timeout is not None else api_cfg.timeout
     sync_workspace_templates(runtime_config.workspace_path)
-    bus = MessageBus()
+    bus = create_bus(runtime_config)
     session_manager = SessionManager(runtime_config.workspace_path)
     try:
         agent_loop = AgentLoop.from_config(
@@ -699,9 +724,11 @@ def serve(
     api_app = create_app(agent_loop, model_name=model_name, request_timeout=timeout)
 
     async def on_startup(_app):
+        await bus.start()
         await agent_loop._connect_mcp()
 
     async def on_cleanup(_app):
+        await bus.stop()
         await agent_loop.close_mcp()
 
     api_app.on_startup.append(on_startup)
@@ -713,6 +740,223 @@ def serve(
 # ============================================================================
 # Gateway / Server
 # ============================================================================
+
+
+@app.command()
+def gateway(
+    port: int | None = typer.Option(None, "--port", "-p", help="Gateway port"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+):
+    """Start the nanobot gateway."""
+    if verbose:
+        logger.remove(_log_handler_id)
+        logger.add(
+            sys.stderr,
+            format=(
+                "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+                "<level>{level: <5}</level> | "
+                "<cyan>{extra[channel]}</cyan> | "
+                "<level>{message}</level>"
+            ),
+            level="DEBUG",
+            colorize=None,
+            filter=lambda record: record["extra"].setdefault("channel", "-") or True,
+        )
+    cfg = _load_runtime_config(config, workspace)
+    _run_gateway(cfg, port=port)
+
+
+DESKTOP_BOOTSTRAP_PROVIDER = "openai_codex"
+DESKTOP_BOOTSTRAP_MODEL = "openai-codex/gpt-5.1-codex"
+
+
+def _desktop_provider_error_is_recoverable(error: ValueError) -> bool:
+    message = str(error)
+    return "No API key configured" in message or "requires api_key and api_base" in message
+
+
+def _desktop_provider_needs_bootstrap(config: Config) -> bool:
+    from nanobot.providers.factory import make_provider
+
+    try:
+        make_provider(config)
+        return False
+    except ValueError as e:
+        if not _desktop_provider_error_is_recoverable(e):
+            raise
+        return True
+
+
+def _reset_desktop_config_to_unconfigured(config: Config) -> bool:
+    defaults = config.agents.defaults
+    changed = False
+    if defaults.model_preset is not None:
+        defaults.model_preset = None
+        changed = True
+    if defaults.provider:
+        defaults.provider = ""
+        changed = True
+    if defaults.model:
+        defaults.model = ""
+        changed = True
+    return changed
+
+
+def _is_persisted_desktop_bootstrap(config: Config) -> bool:
+    defaults = config.agents.defaults
+    return (
+        defaults.model_preset is None
+        and defaults.provider == DESKTOP_BOOTSTRAP_PROVIDER
+        and defaults.model == DESKTOP_BOOTSTRAP_MODEL
+        and not config.model_presets
+    )
+
+
+def _apply_desktop_runtime_bootstrap(config: Config) -> None:
+    defaults = config.agents.defaults
+    config.agents.defaults.model_preset = None
+    defaults.provider = DESKTOP_BOOTSTRAP_PROVIDER
+    defaults.model = DESKTOP_BOOTSTRAP_MODEL
+
+
+def _load_or_create_desktop_config(config: str | None, workspace: str | None) -> Config:
+    """Load the desktop-owned config, creating it on first launch."""
+    from nanobot.config.loader import (
+        get_config_path,
+        load_config,
+        resolve_config_env_vars,
+        save_config,
+        set_config_path,
+    )
+    from nanobot.config.schema import Config as NanobotConfig
+
+    config_path = Path(config).expanduser().resolve() if config else get_config_path()
+    set_config_path(config_path)
+    changed = False
+    if config_path.exists():
+        try:
+            loaded = resolve_config_env_vars(load_config(config_path))
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(1)
+    else:
+        loaded = NanobotConfig()
+        changed = True
+
+    if workspace:
+        workspace_path = Path(workspace).expanduser()
+        loaded.agents.defaults.workspace = str(workspace_path)
+        changed = True
+
+    if _is_persisted_desktop_bootstrap(loaded):
+        changed = _reset_desktop_config_to_unconfigured(loaded) or changed
+    elif _desktop_provider_needs_bootstrap(loaded):
+        changed = _reset_desktop_config_to_unconfigured(loaded) or changed
+
+    if changed:
+        save_config(loaded, config_path)
+
+    runtime_config = loaded.model_copy(deep=True)
+    if _desktop_provider_needs_bootstrap(runtime_config):
+        _apply_desktop_runtime_bootstrap(runtime_config)
+    return runtime_config
+
+
+def _configure_desktop_gateway(
+    config: Config,
+    *,
+    webui_port: int,
+    webui_socket: str | None,
+    token_issue_secret: str,
+) -> None:
+    """Force a local WebSocket-only gateway for the desktop app process."""
+    config.gateway.host = "127.0.0.1"
+    config.gateway.port = webui_port
+    config.gateway.heartbeat.enabled = False
+
+    extras = dict(getattr(config.channels, "__pydantic_extra__", None) or {})
+    for name, section in list(extras.items()):
+        if name == "websocket":
+            continue
+        if isinstance(section, dict):
+            extras[name] = {**section, "enabled": False}
+        else:
+            with suppress(Exception):
+                setattr(section, "enabled", False)
+            extras[name] = section
+
+    websocket_cfg = extras.get("websocket")
+    if not isinstance(websocket_cfg, dict):
+        websocket_cfg = {}
+    websocket_cfg.update(
+        {
+            "enabled": True,
+            "host": "127.0.0.1",
+            "port": webui_port,
+            "unix_socket_path": webui_socket or "",
+            "path": "/",
+            "token_issue_secret": token_issue_secret,
+            "websocket_requires_token": True,
+            "allow_from": ["*"],
+            "streaming": True,
+        }
+    )
+    extras["websocket"] = websocket_cfg
+    config.channels.__pydantic_extra__ = extras
+
+
+@app.command("desktop-gateway", hidden=True)
+def desktop_gateway(
+    webui_port: int = typer.Option(0, "--webui-port", min=0, max=65535),
+    webui_socket: str | None = typer.Option(None, "--webui-socket", help="Unix socket path for desktop IPC"),
+    token_issue_secret: str = typer.Option(..., "--token-issue-secret"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Desktop workspace directory"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Desktop config file"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+):
+    """Start the private local gateway used by nanobot Desktop."""
+    if not token_issue_secret.strip():
+        console.print("[red]Error: --token-issue-secret is required[/red]")
+        raise typer.Exit(1)
+    if webui_port <= 0 and not (webui_socket or "").strip():
+        console.print("[red]Error: --webui-port or --webui-socket is required[/red]")
+        raise typer.Exit(1)
+    if verbose:
+        logger.remove(_log_handler_id)
+        logger.add(
+            sys.stderr,
+            format=(
+                "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+                "<level>{level: <5}</level> | "
+                "<cyan>{extra[channel]}</cyan> | "
+                "<level>{message}</level>"
+            ),
+            level="DEBUG",
+            colorize=None,
+            filter=lambda record: record["extra"].setdefault("channel", "-") or True,
+        )
+    cfg = _load_or_create_desktop_config(config, workspace)
+    _configure_desktop_gateway(
+        cfg,
+        webui_port=webui_port,
+        webui_socket=webui_socket,
+        token_issue_secret=token_issue_secret,
+    )
+    _run_gateway(
+        cfg,
+        port=webui_port,
+        webui_static_dist=False,
+        webui_runtime_surface="native",
+        webui_runtime_capabilities={
+            "can_restart_engine": True,
+            "can_pick_folder": True,
+            "can_open_logs": True,
+            "can_export_diagnostics": True,
+        },
+        health_server_enabled=False,
+    )
 
 
 def _run_gateway(
@@ -727,7 +971,7 @@ def _run_gateway(
 ) -> None:
     """Shared gateway runtime; ``open_browser_url`` opens a tab once channels are up."""
     from nanobot.agent.tools.message import MessageTool
-    from nanobot.bus.queue import MessageBus
+    from nanobot.bus.factory import create_bus
     from nanobot.bus.runtime_events import RuntimeEventBus
     from nanobot.channels.manager import ChannelManager
     from nanobot.cron.bound_runner import run_bound_cron_job
@@ -744,7 +988,7 @@ def _run_gateway(
 
     console.print(f"{__logo__} Starting nanobot gateway version {__version__} on port {port}...")
     sync_workspace_templates(config.workspace_path)
-    bus = MessageBus()
+    bus = create_bus(config)
     runtime_events = RuntimeEventBus()
     try:
         provider_snapshot = build_provider_snapshot(config)
@@ -797,6 +1041,9 @@ def _run_gateway(
         """Publish a user-visible message and mirror it into that channel's session."""
         metadata = dict(msg.metadata or {})
         record = record or bool(metadata.pop("_record_channel_delivery", False))
+        proactive_webui_metadata = _PROACTIVE_WEBUI_METADATA.get()
+        if record and msg.channel == "websocket" and proactive_webui_metadata:
+            metadata = {**metadata, **proactive_webui_metadata}
         if metadata != (msg.metadata or {}):
             msg = OutboundMessage(
                 channel=msg.channel,
@@ -1106,6 +1353,7 @@ def _run_gateway(
 
     async def run():
         try:
+            await bus.start()
             await cron.start()
             tasks = [
                 agent.run(),
@@ -1124,6 +1372,7 @@ def _run_gateway(
             console.print("\n[red]Error: Gateway crashed unexpectedly[/red]")
             console.print(traceback.format_exc())
         finally:
+            await bus.stop()
             await agent.close_mcp()
             cron.stop()
             agent.stop()
@@ -1166,14 +1415,14 @@ def agent(
     """Interact with the agent directly."""
     from loguru import logger
 
-    from nanobot.bus.queue import MessageBus
+    from nanobot.bus.factory import create_bus
     from nanobot.cron.service import CronService
     from nanobot.providers.image_generation import image_gen_provider_configs
 
     config = _load_runtime_config(config, workspace)
     sync_workspace_templates(config.workspace_path)
 
-    bus = MessageBus()
+    bus = create_bus(config)
 
     # Preserve existing single-workspace installs, but keep custom workspaces clean.
     if is_default_workspace(config.workspace_path):
@@ -1293,6 +1542,7 @@ def agent(
             signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
         async def run_interactive():
+            await bus.start()
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
             turn_done.set()
@@ -1411,6 +1661,7 @@ def agent(
                 outbound_task.cancel()
                 await asyncio.gather(bus_task, outbound_task, return_exceptions=True)
                 await agent_loop.close_mcp()
+                await bus.stop()
 
         asyncio.run(run_interactive())
 
