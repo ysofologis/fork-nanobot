@@ -994,6 +994,16 @@ class AgentLoop:
                         self.commands.dispatch,
                     )
                     continue
+                if self._cron_turns.defer_if_active(
+                    msg,
+                    session_key=effective_key,
+                    active_session_keys=self._pending_queues.keys(),
+                ):
+                    logger.info(
+                        "Deferred cron turn for active session {}",
+                        effective_key,
+                    )
+                    continue
                 pending_msg = msg
                 if effective_key != msg.session_key:
                     pending_msg = dataclasses.replace(
@@ -1023,7 +1033,6 @@ class AgentLoop:
                 if t in self._active_tasks.get(k, [])
                 else None
             )
-
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message: per-session serial, cross-session concurrent."""
         session_key = self._effective_session_key(msg)
