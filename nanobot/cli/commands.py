@@ -53,6 +53,7 @@ from rich.text import Text  # noqa: E402
 
 from nanobot import __logo__, __version__  # noqa: E402
 from nanobot.agent.loop import AgentLoop  # noqa: E402
+from nanobot.cli.gateway import create_gateway_app  # noqa: E402
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner  # noqa: E402
 from nanobot.config.paths import get_workspace_path, is_default_workspace  # noqa: E402
 from nanobot.config.schema import Config  # noqa: E402
@@ -74,6 +75,85 @@ def _sanitize_surrogates(text: str) -> str:
     with U+FFFD.
     """
     return text.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le", errors="replace")
+
+
+def _signal_name(signum: int) -> str:
+    with suppress(ValueError):
+        return signal.Signals(signum).name
+    return f"signal {signum}"
+
+
+def _ensure_gateway_tty_signal_mode() -> None:
+    """Keep foreground gateway Ctrl+C usable even after a raw-mode TTY leak."""
+    try:
+        fd = sys.stdin.fileno()
+        if not os.isatty(fd):
+            return
+    except Exception:
+        return
+
+    with suppress(Exception):
+        import termios
+
+        attrs = termios.tcgetattr(fd)
+        lflag = attrs[3]
+        required = termios.ISIG | termios.ICANON | termios.ECHO
+        if (lflag & required) == required:
+            return
+        attrs[3] = lflag | required
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        termios.tcflush(fd, termios.TCIFLUSH)
+        logger.debug("Restored foreground gateway TTY signal mode")
+
+
+def _install_gateway_shutdown_handlers(
+    loop: asyncio.AbstractEventLoop,
+    shutdown_event: asyncio.Event,
+    tasks: list[asyncio.Task],
+    print_status: Callable[[str], None],
+) -> Callable[[], None]:
+    """Install foreground gateway signal handlers and return a restore callback."""
+    loop_signals: list[int] = []
+    previous_handlers: list[tuple[int, Any]] = []
+    shutdown_requested = False
+
+    def request_shutdown(signum: int) -> None:
+        nonlocal shutdown_requested
+        sig_name = _signal_name(signum)
+        if shutdown_requested:
+            logger.warning("Forcing gateway shutdown after repeated {}", sig_name)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            return
+        shutdown_requested = True
+        logger.info("Gateway shutdown requested by {}", sig_name)
+        print_status("\nShutting down... Press Ctrl+C again to force.")
+        shutdown_event.set()
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(signum, request_shutdown, signum)
+        except (NotImplementedError, RuntimeError, ValueError):
+            try:
+                previous = signal.getsignal(signum)
+                signal.signal(signum, lambda sig, _frame: request_shutdown(sig))
+            except (RuntimeError, ValueError):
+                logger.debug("Could not install gateway handler for {}", _signal_name(signum))
+                continue
+            previous_handlers.append((signum, previous))
+        else:
+            loop_signals.append(signum)
+
+    def restore() -> None:
+        for signum in loop_signals:
+            with suppress(NotImplementedError, RuntimeError, ValueError):
+                loop.remove_signal_handler(signum)
+        for signum, handler in previous_handlers:
+            with suppress(RuntimeError, ValueError):
+                signal.signal(signum, handler)
+
+    return restore
 
 
 class SafeFileHistory(FileHistory):
@@ -739,223 +819,6 @@ def serve(
 # ============================================================================
 
 
-@app.command()
-def gateway(
-    port: int | None = typer.Option(None, "--port", "-p", help="Gateway port"),
-    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
-    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
-):
-    """Start the nanobot gateway."""
-    if verbose:
-        logger.remove(_log_handler_id)
-        logger.add(
-            sys.stderr,
-            format=(
-                "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-                "<level>{level: <5}</level> | "
-                "<cyan>{extra[channel]}</cyan> | "
-                "<level>{message}</level>"
-            ),
-            level="DEBUG",
-            colorize=None,
-            filter=lambda record: record["extra"].setdefault("channel", "-") or True,
-        )
-    cfg = _load_runtime_config(config, workspace)
-    _run_gateway(cfg, port=port)
-
-
-DESKTOP_BOOTSTRAP_PROVIDER = "openai_codex"
-DESKTOP_BOOTSTRAP_MODEL = "openai-codex/gpt-5.1-codex"
-
-
-def _desktop_provider_error_is_recoverable(error: ValueError) -> bool:
-    message = str(error)
-    return "No API key configured" in message or "requires api_key and api_base" in message
-
-
-def _desktop_provider_needs_bootstrap(config: Config) -> bool:
-    from nanobot.providers.factory import make_provider
-
-    try:
-        make_provider(config)
-        return False
-    except ValueError as e:
-        if not _desktop_provider_error_is_recoverable(e):
-            raise
-        return True
-
-
-def _reset_desktop_config_to_unconfigured(config: Config) -> bool:
-    defaults = config.agents.defaults
-    changed = False
-    if defaults.model_preset is not None:
-        defaults.model_preset = None
-        changed = True
-    if defaults.provider:
-        defaults.provider = ""
-        changed = True
-    if defaults.model:
-        defaults.model = ""
-        changed = True
-    return changed
-
-
-def _is_persisted_desktop_bootstrap(config: Config) -> bool:
-    defaults = config.agents.defaults
-    return (
-        defaults.model_preset is None
-        and defaults.provider == DESKTOP_BOOTSTRAP_PROVIDER
-        and defaults.model == DESKTOP_BOOTSTRAP_MODEL
-        and not config.model_presets
-    )
-
-
-def _apply_desktop_runtime_bootstrap(config: Config) -> None:
-    defaults = config.agents.defaults
-    config.agents.defaults.model_preset = None
-    defaults.provider = DESKTOP_BOOTSTRAP_PROVIDER
-    defaults.model = DESKTOP_BOOTSTRAP_MODEL
-
-
-def _load_or_create_desktop_config(config: str | None, workspace: str | None) -> Config:
-    """Load the desktop-owned config, creating it on first launch."""
-    from nanobot.config.loader import (
-        get_config_path,
-        load_config,
-        resolve_config_env_vars,
-        save_config,
-        set_config_path,
-    )
-    from nanobot.config.schema import Config as NanobotConfig
-
-    config_path = Path(config).expanduser().resolve() if config else get_config_path()
-    set_config_path(config_path)
-    changed = False
-    if config_path.exists():
-        try:
-            loaded = resolve_config_env_vars(load_config(config_path))
-        except ValueError as e:
-            console.print(f"[red]Error: {e}[/red]")
-            raise typer.Exit(1)
-    else:
-        loaded = NanobotConfig()
-        changed = True
-
-    if workspace:
-        workspace_path = Path(workspace).expanduser()
-        loaded.agents.defaults.workspace = str(workspace_path)
-        changed = True
-
-    if _is_persisted_desktop_bootstrap(loaded):
-        changed = _reset_desktop_config_to_unconfigured(loaded) or changed
-    elif _desktop_provider_needs_bootstrap(loaded):
-        changed = _reset_desktop_config_to_unconfigured(loaded) or changed
-
-    if changed:
-        save_config(loaded, config_path)
-
-    runtime_config = loaded.model_copy(deep=True)
-    if _desktop_provider_needs_bootstrap(runtime_config):
-        _apply_desktop_runtime_bootstrap(runtime_config)
-    return runtime_config
-
-
-def _configure_desktop_gateway(
-    config: Config,
-    *,
-    webui_port: int,
-    webui_socket: str | None,
-    token_issue_secret: str,
-) -> None:
-    """Force a local WebSocket-only gateway for the desktop app process."""
-    config.gateway.host = "127.0.0.1"
-    config.gateway.port = webui_port
-    config.gateway.heartbeat.enabled = False
-
-    extras = dict(getattr(config.channels, "__pydantic_extra__", None) or {})
-    for name, section in list(extras.items()):
-        if name == "websocket":
-            continue
-        if isinstance(section, dict):
-            extras[name] = {**section, "enabled": False}
-        else:
-            with suppress(Exception):
-                setattr(section, "enabled", False)
-            extras[name] = section
-
-    websocket_cfg = extras.get("websocket")
-    if not isinstance(websocket_cfg, dict):
-        websocket_cfg = {}
-    websocket_cfg.update(
-        {
-            "enabled": True,
-            "host": "127.0.0.1",
-            "port": webui_port,
-            "unix_socket_path": webui_socket or "",
-            "path": "/",
-            "token_issue_secret": token_issue_secret,
-            "websocket_requires_token": True,
-            "allow_from": ["*"],
-            "streaming": True,
-        }
-    )
-    extras["websocket"] = websocket_cfg
-    config.channels.__pydantic_extra__ = extras
-
-
-@app.command("desktop-gateway", hidden=True)
-def desktop_gateway(
-    webui_port: int = typer.Option(0, "--webui-port", min=0, max=65535),
-    webui_socket: str | None = typer.Option(None, "--webui-socket", help="Unix socket path for desktop IPC"),
-    token_issue_secret: str = typer.Option(..., "--token-issue-secret"),
-    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Desktop workspace directory"),
-    config: str | None = typer.Option(None, "--config", "-c", help="Desktop config file"),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
-):
-    """Start the private local gateway used by nanobot Desktop."""
-    if not token_issue_secret.strip():
-        console.print("[red]Error: --token-issue-secret is required[/red]")
-        raise typer.Exit(1)
-    if webui_port <= 0 and not (webui_socket or "").strip():
-        console.print("[red]Error: --webui-port or --webui-socket is required[/red]")
-        raise typer.Exit(1)
-    if verbose:
-        logger.remove(_log_handler_id)
-        logger.add(
-            sys.stderr,
-            format=(
-                "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-                "<level>{level: <5}</level> | "
-                "<cyan>{extra[channel]}</cyan> | "
-                "<level>{message}</level>"
-            ),
-            level="DEBUG",
-            colorize=None,
-            filter=lambda record: record["extra"].setdefault("channel", "-") or True,
-        )
-    cfg = _load_or_create_desktop_config(config, workspace)
-    _configure_desktop_gateway(
-        cfg,
-        webui_port=webui_port,
-        webui_socket=webui_socket,
-        token_issue_secret=token_issue_secret,
-    )
-    _run_gateway(
-        cfg,
-        port=webui_port,
-        webui_static_dist=False,
-        webui_runtime_surface="native",
-        webui_runtime_capabilities={
-            "can_restart_engine": True,
-            "can_pick_folder": True,
-            "can_open_logs": True,
-            "can_export_diagnostics": True,
-        },
-        health_server_enabled=False,
-    )
-
-
 def _run_gateway(
     config: Config,
     *,
@@ -1349,17 +1212,48 @@ def _run_gateway(
             console.print(f"[yellow]Could not open browser ({e}); visit {open_browser_url}[/yellow]")
 
     async def run():
+        tasks: list[asyncio.Task] = []
+        shutdown_task: asyncio.Task | None = None
+        runtime_tasks: asyncio.Future | None = None
+        runtime_tasks_drained = False
+        shutdown_event = asyncio.Event()
+        _ensure_gateway_tty_signal_mode()
+        restore_shutdown_handlers = _install_gateway_shutdown_handlers(
+            asyncio.get_running_loop(),
+            shutdown_event,
+            tasks,
+            console.print,
+        )
         try:
             await cron.start()
             tasks = [
-                agent.run(),
-                channels.start_all(),
+                asyncio.create_task(agent.run(), name="nanobot-agent-loop"),
+                asyncio.create_task(channels.start_all(), name="nanobot-channels"),
             ]
             if health_server_enabled:
-                tasks.append(_health_server(config.gateway.host, port))
+                tasks.append(asyncio.create_task(
+                    _health_server(config.gateway.host, port),
+                    name="nanobot-health-server",
+                ))
             if open_browser_url:
-                tasks.append(_open_browser_when_ready())
-            await asyncio.gather(*tasks)
+                tasks.append(asyncio.create_task(
+                    _open_browser_when_ready(),
+                    name="nanobot-open-browser",
+                ))
+            runtime_tasks = asyncio.gather(*tasks)
+            shutdown_task = asyncio.create_task(
+                shutdown_event.wait(),
+                name="nanobot-gateway-shutdown",
+            )
+            done, _pending = await asyncio.wait(
+                {runtime_tasks, shutdown_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if runtime_tasks in done:
+                runtime_tasks_drained = True
+                await runtime_tasks
+            elif runtime_tasks is not None:
+                runtime_tasks.cancel()
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         except Exception:
@@ -1368,18 +1262,43 @@ def _run_gateway(
             console.print("\n[red]Error: Gateway crashed unexpectedly[/red]")
             console.print(traceback.format_exc())
         finally:
-            await agent.close_mcp()
-            cron.stop()
-            agent.stop()
-            await channels.stop_all()
-            # Flush all cached sessions to durable storage before exit.
-            # This prevents data loss on filesystems with write-back
-            # caching (rclone VFS, NFS, FUSE mounts, etc.).
-            flushed = agent.sessions.flush_all()
-            if flushed:
-                logger.info("Shutdown: flushed {} session(s) to disk", flushed)
+            try:
+                if shutdown_task and not shutdown_task.done():
+                    shutdown_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await shutdown_task
+                cron.stop()
+                agent.stop()
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                if runtime_tasks is not None and not runtime_tasks_drained:
+                    with suppress(asyncio.CancelledError, Exception):
+                        await runtime_tasks
+                await channels.stop_all()
+                # Flush all cached sessions to durable storage before exit.
+                # This prevents data loss on filesystems with write-back
+                # caching (rclone VFS, NFS, FUSE mounts, etc.).
+                flushed = agent.sessions.flush_all()
+                if flushed:
+                    logger.info("Shutdown: flushed {} session(s) to disk", flushed)
+            finally:
+                restore_shutdown_handlers()
 
     asyncio.run(run())
+
+
+app.add_typer(
+    create_gateway_app(
+        console=console,
+        log_handler_id=_log_handler_id,
+        load_runtime_config=_load_runtime_config,
+        run_gateway=_run_gateway,
+    ),
+    name="gateway",
+)
 
 
 # ============================================================================
