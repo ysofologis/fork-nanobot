@@ -54,6 +54,11 @@ from rich.text import Text  # noqa: E402
 from nanobot import __logo__, __version__  # noqa: E402
 from nanobot.agent.loop import AgentLoop  # noqa: E402
 from nanobot.cli.gateway import create_gateway_app  # noqa: E402
+# agent-colab: delegation for gateway helpers
+from nanobot.ext.agent_collab.gateway_helpers import (  # noqa: E402
+    ensure_gateway_tty_signal_mode as _ensure_gateway_tty_signal_mode,
+    install_gateway_shutdown_handlers as _install_gateway_shutdown_handlers,
+)
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner  # noqa: E402
 from nanobot.config.paths import get_workspace_path, is_default_workspace  # noqa: E402
 from nanobot.config.schema import Config  # noqa: E402
@@ -77,83 +82,10 @@ def _sanitize_surrogates(text: str) -> str:
     return text.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le", errors="replace")
 
 
-def _signal_name(signum: int) -> str:
-    with suppress(ValueError):
-        return signal.Signals(signum).name
-    return f"signal {signum}"
-
-
-def _ensure_gateway_tty_signal_mode() -> None:
-    """Keep foreground gateway Ctrl+C usable even after a raw-mode TTY leak."""
-    try:
-        fd = sys.stdin.fileno()
-        if not os.isatty(fd):
-            return
-    except Exception:
-        return
-
-    with suppress(Exception):
-        import termios
-
-        attrs = termios.tcgetattr(fd)
-        lflag = attrs[3]
-        required = termios.ISIG | termios.ICANON | termios.ECHO
-        if (lflag & required) == required:
-            return
-        attrs[3] = lflag | required
-        termios.tcsetattr(fd, termios.TCSANOW, attrs)
-        termios.tcflush(fd, termios.TCIFLUSH)
-        logger.debug("Restored foreground gateway TTY signal mode")
-
-
-def _install_gateway_shutdown_handlers(
-    loop: asyncio.AbstractEventLoop,
-    shutdown_event: asyncio.Event,
-    tasks: list[asyncio.Task],
-    print_status: Callable[[str], None],
-) -> Callable[[], None]:
-    """Install foreground gateway signal handlers and return a restore callback."""
-    loop_signals: list[int] = []
-    previous_handlers: list[tuple[int, Any]] = []
-    shutdown_requested = False
-
-    def request_shutdown(signum: int) -> None:
-        nonlocal shutdown_requested
-        sig_name = _signal_name(signum)
-        if shutdown_requested:
-            logger.warning("Forcing gateway shutdown after repeated {}", sig_name)
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            return
-        shutdown_requested = True
-        logger.info("Gateway shutdown requested by {}", sig_name)
-        print_status("\nShutting down... Press Ctrl+C again to force.")
-        shutdown_event.set()
-
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(signum, request_shutdown, signum)
-        except (NotImplementedError, RuntimeError, ValueError):
-            try:
-                previous = signal.getsignal(signum)
-                signal.signal(signum, lambda sig, _frame: request_shutdown(sig))
-            except (RuntimeError, ValueError):
-                logger.debug("Could not install gateway handler for {}", _signal_name(signum))
-                continue
-            previous_handlers.append((signum, previous))
-        else:
-            loop_signals.append(signum)
-
-    def restore() -> None:
-        for signum in loop_signals:
-            with suppress(NotImplementedError, RuntimeError, ValueError):
-                loop.remove_signal_handler(signum)
-        for signum, handler in previous_handlers:
-            with suppress(RuntimeError, ValueError):
-                signal.signal(signum, handler)
-
-    return restore
+# agent-colab: gateway helper functions moved to ext.agent_collab.gateway_helpers
+# _signal_name                  → signal_name
+# _ensure_gateway_tty_signal_mode → ensure_gateway_tty_signal_mode
+# _install_gateway_shutdown_handlers → install_gateway_shutdown_handlers
 
 
 class SafeFileHistory(FileHistory):

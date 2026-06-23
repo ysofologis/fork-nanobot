@@ -884,38 +884,37 @@ class AgentLoop:
             except asyncio.TimeoutError:
                 # No user message arrived — check for agent-to-agent messages
                 # on the timeout fallback.
-                try:
-                    msg = self.bus.agent_inbound.get_nowait()
-                    target = (msg.metadata or {}).get("target_agent")
-                    if target != self.bus.agent_id and target != "*":
+                # agent-colab: check inbound agent-to-agent messages
+                agent_msg = await receive_from_agent(self.bus)
+                if agent_msg:
+                    target = (agent_msg.metadata or {}).get("target_agent")
+                    if target not in (self.bus.agent_id, "*"):
                         logger.debug(
                             "Dropping misrouted agent message for %s (we are %s)",
                             target, self.bus.agent_id,
                         )
                         continue
-                    if msg.metadata and msg.metadata.get("_agent_reply"):
+                    if agent_msg.metadata and agent_msg.metadata.get("_agent_reply"):
                         reply = OutboundMessage(
-                            channel=msg.channel or "cli",
-                            chat_id=msg.chat_id or "",
-                            content=f"<{msg.sender}| {msg.content}",
+                            channel=agent_msg.channel or "cli",
+                            chat_id=agent_msg.chat_id or "",
+                            content=f"<{agent_msg.sender}| {agent_msg.content}",
                         )
                         await self.bus.outbound.put(reply)
                         continue
-                    # Incoming forward (not a reply) — mark for reply routing
-                    # and fall through to regular message processing.
-                    # The response will be sent back to the sender via the bus
-                    # instead of going to the original channel.
-                    meta = dict(msg.metadata or {})
+                    # Incoming forward — mark for reply routing
+                    meta = dict(agent_msg.metadata or {})
                     meta["_agent_forward"] = True
-                    meta["_agent_reply_target"] = msg.sender
-                    msg = dataclasses.replace(msg, metadata=meta)
+                    meta["_agent_reply_target"] = agent_msg.sender
+                    msg = dataclasses.replace(agent_msg, metadata=meta)
                     notification = OutboundMessage(
-                        channel=msg.channel or "cli",
-                        chat_id=msg.chat_id or "",
-                        content=f"<{msg.sender}| {msg.content}",
+                        channel=agent_msg.channel or "cli",
+                        chat_id=agent_msg.chat_id or "",
+                        content=f"<{agent_msg.sender}| {agent_msg.content}",
                     )
                     await self.bus.outbound.put(notification)
-                except asyncio.QueueEmpty:
+                else:
+                    # No agent message either — compact check then continue loop
                     self.auto_compact.check_expired(
                         self._schedule_background,
                         active_session_keys=self._pending_queues.keys(),
@@ -937,34 +936,31 @@ class AgentLoop:
                 continue
             raw = msg.content.strip()
 
-            # Agent routing: |bot-name> content → forward to bot-name via bus
-            # Also: |*> content → broadcast to all agents
-            AGENT_ROUTING_RE = re.compile(r"^\|([\w][\w-]*|\*)\>\s*(.*)", re.DOTALL)
-            if m := AGENT_ROUTING_RE.match(raw):
-                target_agent = m.group(1)
-                forwarded_content = m.group(2).strip()
+            # agent-colab: |bot-name> content → forward to target agent via bus
+            target_agent, clean = parse_agent_route(raw)
+            if target_agent:
                 if target_agent != self.bus.agent_id:
-                    # Forward to target agent(s) via the bus
-                    routing_msg = InboundMessage(
-                        channel=msg.channel,
-                        sender_id=msg.sender_id,
-                        chat_id=msg.chat_id,
-                        content=forwarded_content or "...",
+                    await forward_to_target_agent(
+                        self.bus,
+                        target_agent=target_agent,
+                        content=clean or "...",
                         sender=self.bus.agent_id,
-                        metadata={"target_agent": target_agent},
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        sender_id=msg.sender_id,
                     )
-                    await self.bus.publish_agent_message(routing_msg)
                     # Confirm back to sender
+                    from nanobot.bus.events import OutboundMessage
                     confirm = OutboundMessage(
                         channel=msg.channel,
                         chat_id=msg.chat_id,
-                        content=f"Forwarded to *{target_agent}*: {forwarded_content}",
+                        content=f"Forwarded to *{target_agent}*: {clean}",
                         reply_to=msg.sender_id,
                     )
                     await self.bus.outbound.put(confirm)
                     continue
                 # Addressed to this agent — strip prefix and process normally
-                raw = forwarded_content
+                raw = clean
 
             if self.commands.is_priority(raw):
                 await self._dispatch_command_inline(
@@ -1088,23 +1084,11 @@ class AgentLoop:
                     completed_channel = msg.channel
                     completed_chat_id = msg.chat_id
                     if response is not None:
-                        agent_fwd = (msg.metadata or {}).get("_agent_forward")
-                        if agent_fwd:
-                            reply_target = (msg.metadata or {}).get("_agent_reply_target")
-                            if reply_target:
-                                agent_reply = InboundMessage(
-                                    channel=msg.channel,
-                                    sender_id=msg.sender_id,
-                                    chat_id=msg.chat_id,
-                                    content=response.content,
-                                    sender=self.bus.agent_id,
-                                    metadata={
-                                        "target_agent": reply_target,
-                                        "_agent_reply": True,
-                                    },
-                                )
-                                await self.bus.publish_agent_message(agent_reply)
-                        else:
+                        # agent-colab: route agent-to-agent response back via bus
+                        was_agent = await route_agent_response(
+                            self.bus, msg, response.content, self.bus.agent_id,
+                        )
+                        if not was_agent:
                             await self.bus.publish_outbound(response)
                         completed_channel = response.channel
                         completed_chat_id = response.chat_id
@@ -1955,3 +1939,13 @@ class AgentLoop:
             await self._runtime_events().run_status_changed(msg, session_key, "idle")
             self._runtime_events().clear_turn(session_key)
 
+from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
+
+# agent-colab: delegation to isolate agent-collaboration features
+from nanobot.ext.agent_collab.router import (
+    AGENT_ROUTING_RE,
+    parse_agent_route,
+    forward_to_target_agent,
+    receive_from_agent,
+    route_agent_response,
+)

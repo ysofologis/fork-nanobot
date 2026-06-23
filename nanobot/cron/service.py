@@ -136,10 +136,7 @@ class CronService:
     """Service for managing and executing scheduled jobs."""
 
     _MAX_RUN_HISTORY = 20
-    _UNBOUND_AGENT_JOB_REASON = (
-        "agent cron payload is missing bound session delivery context; "
-        "recreate it from a chat session"
-    )
+    # agent-colab: constant now in ext.agent_collab.agent_binding.UNBOUND_AGENT_JOB_REASON
 
     def __init__(
         self,
@@ -159,40 +156,18 @@ class CronService:
         self.max_sleep_ms = max_sleep_ms
 
     def _is_unbound_agent_job(self, job: CronJob) -> bool:
-        return job.payload.kind == "agent_turn" and not is_bound_cron_job(job)
+        # agent-colab: delegated to ext.agent_collab.agent_binding
+        return _ac_is_unbound_agent_job(job)
 
     def _enforce_agent_binding(self, job: CronJob) -> bool:
-        """Disable user cron jobs that cannot be routed to a concrete session."""
-        if not self._is_unbound_agent_job(job):
-            return False
-        if (
-            not job.enabled
-            and job.state.next_run_at_ms is None
-            and job.state.last_status == "error"
-            and job.state.last_error
-        ):
-            return False
-
-        job.enabled = False
-        job.state.next_run_at_ms = None
-        job.state.last_status = "error"
-        job.state.last_error = self._UNBOUND_AGENT_JOB_REASON
-        job.updated_at_ms = max(job.updated_at_ms, _now_ms())
-        logger.warning(
-            "Cron: disabled unbound agent job '{}' ({}): {}",
-            job.name,
-            job.id,
-            self._UNBOUND_AGENT_JOB_REASON,
-        )
-        return True
+        # agent-colab: delegated to ext.agent_collab.agent_binding
+        return _ac_enforce_agent_binding(job)
 
     def _enforce_store_agent_bindings(self) -> bool:
+        # agent-colab: delegated to ext.agent_collab.agent_binding
         if not self._store:
             return False
-        changed = False
-        for job in self._store.jobs:
-            changed = self._enforce_agent_binding(job) or changed
-        return changed
+        return _ac_enforce_store_agent_bindings(self._store)
 
     def _load_jobs(self) -> tuple[list[CronJob], int] | None:
         """Load jobs from disk.
@@ -846,3 +821,11 @@ class CronService:
             "jobs": len(store.jobs),
             "next_wake_at_ms": self._get_next_wake_ms(),
         }
+from nanobot.cron.session_turns import is_bound_cron_job
+
+# agent-colab: delegation for cron agent binding
+from nanobot.ext.agent_collab.agent_binding import (
+    is_unbound_agent_job as _ac_is_unbound_agent_job,
+    enforce_agent_binding as _ac_enforce_agent_binding,
+    enforce_store_agent_bindings as _ac_enforce_store_agent_bindings,
+)

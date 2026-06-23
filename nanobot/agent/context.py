@@ -60,7 +60,7 @@ class ContextBuilder:
     def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None, agent_id: str | None = None):
         self.workspace = workspace
         self.timezone = timezone
-        self.agent_id = agent_id
+        self.agent_id = agent_id  # agent-colab
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace, disabled_skills=set(disabled_skills) if disabled_skills else None)
 
@@ -115,7 +115,7 @@ class ContextBuilder:
         if session_summary:
             parts.append(f"[Archived Context Summary]\n\n{session_summary}")
 
-        # Load optional bot-specific prompt file: {agent_id}_PROMPT.md
+        # agent-colab: load optional bot-specific prompt file: {agent_id}_PROMPT.md
         if self.agent_id:
             bot_prompt_path = self.workspace / f"{self.agent_id}_PROMPT.md"
             if bot_prompt_path.exists():
@@ -149,7 +149,7 @@ class ContextBuilder:
         chat_id: str | None,
         timezone: str | None = None,
         sender_id: str | None = None,
-        agent_id: str | None = None,
+        agent_id: str | None = None,  # agent-colab
         supplemental_lines: Sequence[str] | None = None,
     ) -> str:
         """Build untrusted runtime metadata block appended after user content."""
@@ -159,7 +159,7 @@ class ContextBuilder:
         if sender_id:
             lines += [f"Sender ID: {sender_id}"]
         if agent_id:
-            lines += [f"Agent ID: {agent_id}"]
+            lines += [f"Agent ID: {agent_id}"]  # agent-colab
         if supplemental_lines:
             lines.extend(supplemental_lines)
         return ContextBuilder._RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines) + "\n" + ContextBuilder._RUNTIME_CONTEXT_END
@@ -209,7 +209,7 @@ class ContextBuilder:
         chat_id: str | None = None,
         current_role: str = "user",
         sender_id: str | None = None,
-        agent_id: str | None = None,
+        agent_id: str | None = None,  # agent-colab
         session_summary: str | None = None,
         session_metadata: Mapping[str, Any] | None = None,
         current_runtime_lines: Sequence[str] | None = None,
@@ -295,3 +295,4 @@ class ContextBuilder:
         if not images:
             return text
         return images + [{"type": "text", "text": text}]
+

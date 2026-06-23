@@ -24,7 +24,7 @@ class InboundMessage:
     sender_id: str  # User identifier
     chat_id: str  # Chat/channel identifier
     content: str  # Message text
-    sender: str = ""  # Agent ID of the sending instance (cross-bus comms)
+    sender: str = ""  # agent-colab: Agent ID of the sending instance (cross-bus comms)
     timestamp: datetime = field(default_factory=datetime.now)
     media: list[str] = field(default_factory=list)  # Media URLs
     metadata: dict[str, Any] = field(default_factory=dict)  # Channel-specific data

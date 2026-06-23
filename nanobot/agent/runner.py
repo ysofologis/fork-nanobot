@@ -54,7 +54,7 @@ from nanobot.utils.runtime import (
     repeated_workspace_violation_error,
 )
 
-GoalContinueMessage = str | Callable[[], str | None]
+# agent-colab: GoalContinueMessage now imported from ext.agent_collab.runner_ext
 
 _DEFAULT_ERROR_MESSAGE = "Sorry, I encountered an error calling the AI model."
 _ARREARAGE_ERROR_MESSAGE = (
@@ -230,14 +230,8 @@ class AgentRunner:
         return True, injection_cycles
 
     def _build_goal_continue_message(self, spec: AgentRunSpec) -> dict[str, str]:
-        custom = spec.goal_continue_message
-        if callable(custom):
-            try:
-                custom = custom()
-            except Exception:
-                logger.exception("goal_continue_message callback failed")
-                custom = None
-        return build_goal_continue_message(custom)
+        # agent-colab: delegated to ext.agent_collab.runner_ext
+        return build_goal_continue_message_from_spec(spec)
 
     async def _drain_injections(self, spec: AgentRunSpec) -> list[dict[str, Any]]:
         """Drain pending user messages via the injection callback.
@@ -291,13 +285,8 @@ class AgentRunner:
 
     @staticmethod
     def _has_injection_content(content: Any) -> bool:
-        if content is None:
-            return False
-        if isinstance(content, str):
-            return bool(content.strip())
-        if isinstance(content, list):
-            return bool(content)
-        return True
+        # agent-colab: delegated to ext.agent_collab.runner_ext
+        return _ac_has_injection_content(content)
 
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
         hook = spec.hook or AgentHook()
@@ -925,21 +914,13 @@ class AgentRunner:
     def _budget_exhausted_finalization_messages(
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        retry_messages = list(messages)
-        retry_messages.append(build_budget_exhausted_finalization_message())
-        return retry_messages
+        # agent-colab: delegated to ext.agent_collab.runner_ext
+        return _ac_budget_exhausted_finalization_messages(messages)
 
     @staticmethod
     def _max_iterations_fallback(spec: AgentRunSpec) -> str:
-        if spec.max_iterations_message:
-            return spec.max_iterations_message.format(
-                max_iterations=spec.max_iterations,
-            )
-        return render_template(
-            "agent/max_iterations_message.md",
-            strip=True,
-            max_iterations=spec.max_iterations,
-        )
+        # agent-colab: delegated to ext.agent_collab.runner_ext
+        return _ac_max_iterations_fallback(spec)
 
     def _usage_or_estimate(
         self,
@@ -1568,3 +1549,11 @@ class AgentRunner:
         if current:
             batches.append(current)
         return batches
+# agent-colab: delegation for runner extensions
+from nanobot.ext.agent_collab.runner_ext import (
+    GoalContinueMessage,
+    build_goal_continue_message_from_spec,
+    has_injection_content as _ac_has_injection_content,
+    budget_exhausted_finalization_messages as _ac_budget_exhausted_finalization_messages,
+    max_iterations_fallback as _ac_max_iterations_fallback,
+)
