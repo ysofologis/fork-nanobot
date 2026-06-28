@@ -26,6 +26,7 @@ import type { CliAppInfo, McpPresetInfo, UIMessage } from "@/lib/types";
 
 export interface ThreadViewportHandle {
   jumpToUserPrompt: (promptId: string) => void;
+  cancelAutoScroll: () => void;
 }
 
 interface ThreadViewportProps {
@@ -278,7 +279,14 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
     setVisibleMessageCount((count) => Math.max(count, messages.length - index));
   }, [messages]);
 
-  useImperativeHandle(ref, () => ({ jumpToUserPrompt }), [jumpToUserPrompt]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      jumpToUserPrompt,
+      cancelAutoScroll: cancelScheduledBottomScroll,
+    }),
+    [cancelScheduledBottomScroll, jumpToUserPrompt],
+  );
 
   const jumpToUserPrompt = useCallback((promptId: string) => {
     const scrollEl = scrollRef.current;
