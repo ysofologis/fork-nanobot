@@ -31,6 +31,13 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.self import MyTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.bus.outbound_events import (
+    RetryWaitEvent,
+    StreamDeltaEvent,
+    StreamedResponseEvent,
+    StreamEndEvent,
+    outbound_message_for_event,
+)
 from nanobot.bus.progress import build_bus_progress_callback
 from nanobot.bus.queue import MessageBus
 from nanobot.bus.runtime_events import (
@@ -218,6 +225,7 @@ class AgentLoop:
         preset_snapshot_loader: preset_helpers.PresetSnapshotLoader | None = None,
         runtime_events: RuntimeEventBus | None = None,
         runtime_model_publisher: Callable[[str, str | None], None] | None = None,
+        restart_mode: str = "auto",
     ):
         from nanobot.config.schema import ToolsConfig
 
@@ -227,6 +235,7 @@ class AgentLoop:
         self.runtime_events = runtime_events or RuntimeEventBus()
         self.runtime_event_publisher = RuntimeEventPublisher(self.runtime_events)
         self.channels_config = channels_config
+        self.restart_mode = restart_mode
         self.provider = provider
         self._provider_snapshot_loader = provider_snapshot_loader
         self._preset_snapshot_loader = preset_snapshot_loader
@@ -396,6 +405,7 @@ class AgentLoop:
             tools_config=config.tools,
             model_presets=preset_helpers.configured_model_presets(config),
             model_preset=defaults.model_preset,
+            restart_mode=config.gateway.restart_mode,
             provider_snapshot_loader=provider_snapshot_loader,
             preset_snapshot_loader=preset_snapshot_loader,
             **extra,
@@ -564,14 +574,12 @@ class AgentLoop:
         """Build a retry-wait callback that publishes to the message bus."""
 
         async def _on_retry_wait(content: str) -> None:
-            meta = dict(msg.metadata or {})
-            meta["_retry_wait"] = True
             await self.bus.publish_outbound(
-                OutboundMessage(
+                outbound_message_for_event(
                     channel=msg.channel,
                     chat_id=msg.chat_id,
-                    content=content,
-                    metadata=meta,
+                    event=RetryWaitEvent(content=content),
+                    metadata=msg.metadata,
                 )
             )
 
@@ -996,26 +1004,31 @@ class AgentLoop:
                             return f"{stream_base_id}:{stream_segment}"
 
                         async def on_stream(delta: str) -> None:
-                            meta = dict(msg.metadata or {})
-                            meta["_stream_delta"] = True
-                            meta["_stream_id"] = _current_stream_id()
-                            await self.bus.publish_outbound(OutboundMessage(
-                                channel=msg.channel, chat_id=msg.chat_id,
-                                content=delta,
-                                metadata=meta,
-                            ))
+                            await self.bus.publish_outbound(
+                                outbound_message_for_event(
+                                    channel=msg.channel,
+                                    chat_id=msg.chat_id,
+                                    event=StreamDeltaEvent(
+                                        content=delta,
+                                        stream_id=_current_stream_id(),
+                                    ),
+                                    metadata=msg.metadata,
+                                )
+                            )
 
                         async def on_stream_end(*, resuming: bool = False) -> None:
                             nonlocal stream_segment
-                            meta = dict(msg.metadata or {})
-                            meta["_stream_end"] = True
-                            meta["_resuming"] = resuming
-                            meta["_stream_id"] = _current_stream_id()
-                            await self.bus.publish_outbound(OutboundMessage(
-                                channel=msg.channel, chat_id=msg.chat_id,
-                                content="",
-                                metadata=meta,
-                            ))
+                            await self.bus.publish_outbound(
+                                outbound_message_for_event(
+                                    channel=msg.channel,
+                                    chat_id=msg.chat_id,
+                                    event=StreamEndEvent(
+                                        stream_id=_current_stream_id(),
+                                        resuming=resuming,
+                                    ),
+                                    metadata=msg.metadata,
+                                )
+                            )
                             stream_segment += 1
 
                     response = await self._process_message(
@@ -1368,9 +1381,10 @@ class AgentLoop:
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
 
+        event = None
         meta = dict(msg.metadata or {})
         if on_stream is not None and stop_reason not in {"error", "tool_error"}:
-            meta["_streamed"] = True
+            event = StreamedResponseEvent()
         if turn_latency_ms is not None:
             meta["latency_ms"] = int(turn_latency_ms)
 
@@ -1378,6 +1392,7 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
+            event=event,
             metadata=meta,
         )
 
