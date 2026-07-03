@@ -17,16 +17,21 @@ from urllib.parse import unquote, urlparse
 from loguru import logger
 
 from nanobot.config.paths import get_webui_dir
-from nanobot.cron.session_turns import CRON_HISTORY_META
+from nanobot.session.automation_turns import is_automation_kind
+from nanobot.session.history_visibility import is_hidden_history_message
 from nanobot.session.manager import SessionManager
 from nanobot.webui.metadata import WEBUI_MESSAGE_SOURCE_METADATA_KEY, WEBUI_TURN_METADATA_KEY
 
 WEBUI_TRANSCRIPT_SCHEMA_VERSION = 3
 WEBUI_FORK_MARKER_EVENT = "fork_marker"
 _MAX_TRANSCRIPT_FILE_BYTES = 8 * 1024 * 1024
+_TARGET_ACTIVE_TRANSCRIPT_BYTES = _MAX_TRANSCRIPT_FILE_BYTES // 2
+_TRANSCRIPT_SEGMENT_MANIFEST_VERSION = 2
+_TRANSCRIPT_ACTIVE_CHUNK_ID = "active"
+_TRANSCRIPT_SEGMENT_RE = re.compile(r"^\d{6}\.jsonl$")
+_DEFAULT_TRANSCRIPT_PAGE_LIMIT = 160
+_MAX_TRANSCRIPT_PAGE_LIMIT = 1000
 _WEBUI_TURN_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-WEBUI_TURN_METADATA_KEY = "webui_turn_id"
-WEBUI_MESSAGE_SOURCE_METADATA_KEY = "_webui_message_source"
 _MARKDOWN_LOCAL_IMAGE_RE = re.compile(
     r"!\[([^\]]*)\]\((<[^>]+>|[^)\s]+)(\s+(?:\"[^\"]*\"|'[^']*'))?\)"
 )
@@ -578,6 +583,12 @@ def _append_to_active_transcript(session_key: str, obj: dict[str, Any]) -> None:
         os.fsync(f.fileno())
 
 
+def append_transcript_object(session_key: str, obj: dict[str, Any]) -> None:
+    _append_to_active_transcript(session_key, obj)
+    if obj.get("event") == "turn_end":
+        _rotate_active_transcript_if_needed(session_key)
+
+
 def normalize_webui_turn_id(value: Any) -> str:
     if isinstance(value, str):
         candidate = value.strip()
@@ -588,9 +599,12 @@ def normalize_webui_turn_id(value: Any) -> str:
 
 def webui_message_source(metadata: dict[str, Any] | None) -> dict[str, str] | None:
     raw = (metadata or {}).get(WEBUI_MESSAGE_SOURCE_METADATA_KEY)
-    if not isinstance(raw, dict) or raw.get("kind") != "cron":
+    if not isinstance(raw, dict):
         return None
-    source: dict[str, str] = {"kind": "cron"}
+    kind = raw.get("kind")
+    if not is_automation_kind(kind):
+        return None
+    source: dict[str, str] = {"kind": kind}
     label = raw.get("label")
     if isinstance(label, str) and label.strip():
         source["label"] = label.strip()
@@ -697,6 +711,103 @@ class WebUITranscriptRecorder:
             self._turn_sequences.pop((chat_id, turn_id), None)
 
 
+def _chat_id_from_session_key(session_key: str) -> str | None:
+    if not session_key.startswith("websocket:"):
+        return None
+    chat_id = session_key.split(":", 1)[1].strip()
+    return chat_id or None
+
+
+def _is_user_transcript_row(row: dict[str, Any]) -> bool:
+    return row.get("event") == "user" or row.get("role") == "user"
+
+
+def fork_transcript_before_user_index(
+    source_key: str,
+    target_key: str,
+    before_user_index: int,
+) -> bool:
+    """Copy transcript rows before a zero-based global user-message index.
+
+    ``before_user_index == user_count`` copies the full transcript prefix. WebUI
+    uses that when forking from an assistant reply at the end of a chat.
+    """
+    if before_user_index < 0:
+        return False
+    lines = read_transcript_lines(source_key)
+    if not lines:
+        return False
+
+    target_chat_id = _chat_id_from_session_key(target_key)
+    copied: list[dict[str, Any]] = []
+    user_index = 0
+    found_target = False
+    for row in lines:
+        if row.get("event") == WEBUI_FORK_MARKER_EVENT:
+            continue
+        if _is_user_transcript_row(row):
+            if user_index == before_user_index:
+                found_target = True
+                break
+            user_index += 1
+        dup = json.loads(json.dumps(row, ensure_ascii=False))
+        if target_chat_id is not None:
+            dup["chat_id"] = target_chat_id
+        copied.append(dup)
+    if user_index == before_user_index:
+        found_target = True
+
+    if not found_target:
+        return False
+
+    _write_transcript_lines(target_key, copied)
+    return True
+
+
+def append_fork_marker(session_key: str) -> None:
+    """Mark the UI-only boundary where a WebUI fork starts accepting new turns."""
+    append_transcript_object(
+        session_key,
+        {
+            "event": WEBUI_FORK_MARKER_EVENT,
+            "chat_id": _chat_id_from_session_key(session_key),
+        },
+    )
+
+
+def write_session_messages_as_transcript(
+    target_key: str,
+    messages: list[dict[str, Any]],
+) -> None:
+    """Write a minimal WebUI transcript from already-truncated session messages."""
+    target_chat_id = _chat_id_from_session_key(target_key)
+    rows: list[dict[str, Any]] = []
+    for msg in messages:
+        if is_hidden_history_message(msg):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        text = content if isinstance(content, str) else ""
+        if role == "user":
+            row: dict[str, Any] = {"event": "user", "chat_id": target_chat_id, "text": text}
+            media = msg.get("media")
+            if isinstance(media, list) and media:
+                row["media_paths"] = [str(p) for p in media if isinstance(p, str) and p]
+            for key in ("cli_apps", "mcp_presets"):
+                value = msg.get(key)
+                if isinstance(value, list) and value:
+                    row[key] = json.loads(json.dumps(value, ensure_ascii=False))
+        elif role == "assistant" and text.strip():
+            row = {"event": "message", "chat_id": target_chat_id, "text": text}
+            media = msg.get("media")
+            if isinstance(media, list) and media:
+                row["media"] = [str(p) for p in media if isinstance(p, str) and p]
+        else:
+            continue
+        rows.append(row)
+    _write_transcript_lines(target_key, rows)
+
+
 def delete_webui_transcript(session_key: str) -> bool:
     removed = False
     for path in (webui_transcript_path(session_key), _legacy_webui_thread_path(session_key)):
@@ -744,13 +855,28 @@ def build_user_transcript_event(
     return event
 
 
+def _is_legacy_raw_subagent_result(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    if not isinstance(content, str):
+        return False
+    text = content.replace("\r\n", "\n").strip()
+    return (
+        text.startswith("[Subagent '")
+        and "\n\nTask:" in text
+        and "\n\nResult:" in text
+        and "Summarize this naturally" in text
+    )
+
+
 def _session_user_event(
     session_key: str,
     message: dict[str, Any],
 ) -> dict[str, Any] | None:
     if message.get("role") != "user":
         return None
-    if message.get(CRON_HISTORY_META) is True:
+    if is_hidden_history_message(message):
+        return None
+    if _is_legacy_raw_subagent_result(message):
         return None
     content = message.get("content")
     text = content if isinstance(content, str) else ""
@@ -1166,9 +1292,12 @@ def replay_transcript_to_ui_messages(
 
     def _source_fields(rec: dict[str, Any]) -> dict[str, Any]:
         source = rec.get("source")
-        if not isinstance(source, dict) or source.get("kind") != "cron":
+        if not isinstance(source, dict):
             return {}
-        out: dict[str, Any] = {"source": {"kind": "cron"}}
+        kind = source.get("kind")
+        if not is_automation_kind(kind):
+            return {}
+        out: dict[str, Any] = {"source": {"kind": kind}}
         label = source.get("label")
         if isinstance(label, str) and label.strip():
             out["source"]["label"] = label.strip()

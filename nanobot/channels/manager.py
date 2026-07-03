@@ -25,6 +25,7 @@ from nanobot.bus.outbound_events import (
 )
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
+from nanobot.channels.registry import DEFAULT_ENABLED_CHANNELS
 from nanobot.config.schema import Config
 from nanobot.utils.restart import consume_restart_notice_from_env, format_restart_completed_message
 
@@ -51,6 +52,21 @@ _BOOL_CAMEL_ALIASES: dict[str, str] = {
     "show_reasoning": "showReasoning",
 }
 
+def _default_channel_config(name: str) -> dict[str, Any] | None:
+    if name != "websocket":
+        return None
+    from nanobot.channels.websocket import WebSocketChannel
+
+    return WebSocketChannel.default_config()
+
+
+def _channel_config_enabled(name: str, section: Any) -> bool:
+    default_enabled = name in DEFAULT_ENABLED_CHANNELS
+    if isinstance(section, dict):
+        return bool(section.get("enabled", default_enabled))
+    return bool(getattr(section, "enabled", default_enabled))
+
+
 class ChannelManager:
     """
     Manages chat channels and coordinates message routing.
@@ -68,8 +84,10 @@ class ChannelManager:
         *,
         session_manager: "SessionManager | None" = None,
         cron_service: Any | None = None,
+        local_trigger_store: Any | None = None,
         webui_runtime_model_name: Callable[[], str | None] | None = None,
         webui_cron_pending_job_ids: Callable[[str], set[str]] | None = None,
+        webui_local_trigger_pending_ids: Callable[[str], set[str]] | None = None,
         webui_static_dist: bool = True,
         webui_runtime_surface: str = "browser",
         webui_runtime_capabilities: dict[str, Any] | None = None,
@@ -78,8 +96,10 @@ class ChannelManager:
         self.bus = bus
         self._session_manager = session_manager
         self._cron_service = cron_service
+        self._local_trigger_store = local_trigger_store
         self._webui_runtime_model_name = webui_runtime_model_name
         self._webui_cron_pending_job_ids = webui_cron_pending_job_ids
+        self._webui_local_trigger_pending_ids = webui_local_trigger_pending_ids
         self._webui_static_dist = webui_static_dist
         self._webui_runtime_surface = webui_runtime_surface
         self._webui_runtime_capabilities = dict(webui_runtime_capabilities or {})
@@ -101,21 +121,32 @@ class ChannelManager:
         candidate_names = set(names)
         extra = getattr(self.config.channels, "__pydantic_extra__", None) or {}
         candidate_names.update(extra.keys())
+        default_sections: dict[str, Any] = {}
+
+        def section_for(name: str) -> Any:
+            section = getattr(self.config.channels, name, None)
+            if section is not None or name not in DEFAULT_ENABLED_CHANNELS:
+                return section
+            if name not in default_sections:
+                default = _default_channel_config(name)
+                if default is not None:
+                    default_sections[name] = default
+            return default_sections.get(name)
 
         enabled_names: set[str] = set()
         for name in candidate_names:
-            section = getattr(self.config.channels, name, None)
+            section = section_for(name)
             if section is None:
                 continue
-            if (
-                section.get("enabled", False)
-                if isinstance(section, dict)
-                else getattr(section, "enabled", False)
-            ):
+            if _channel_config_enabled(name, section):
                 enabled_names.add(name)
 
-        for name, cls in discover_enabled(enabled_names, _names=names).items():
-            section = getattr(self.config.channels, name, None)
+        for name, cls in discover_enabled(
+            enabled_names,
+            _names=names,
+            warn_import_errors=True,
+        ).items():
+            section = section_for(name)
             if section is None:
                 continue
             try:
@@ -139,7 +170,9 @@ class ChannelManager:
                         runtime_surface=self._webui_runtime_surface,
                         runtime_capabilities_overrides=self._webui_runtime_capabilities,
                         cron_service=self._cron_service,
+                        local_trigger_store=self._local_trigger_store,
                         cron_pending_job_ids=self._webui_cron_pending_job_ids,
+                        local_trigger_pending_ids=self._webui_local_trigger_pending_ids,
                         logger=logger,
                     )
                     kwargs["gateway"] = gateway
