@@ -80,6 +80,8 @@ Default paths:
 | `nanobot agent --no-markdown` | Print plain text instead of Rich-rendered Markdown |
 | `nanobot agent --logs` | Show runtime logs while chatting |
 
+In interactive mode, `Enter` sends the current message. Press `Alt+Enter` to add a newline before sending.
+
 Interactive mode exits with `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
 
 ## WebUI
@@ -201,6 +203,8 @@ Default API endpoint:
 ```text
 http://127.0.0.1:8900
 ```
+
+Public binds (`0.0.0.0` or `::`) require `api.apiKey`; send it as a Bearer token on API routes.
 
 See [`openai-api.md`](./openai-api.md) for request examples.
 
