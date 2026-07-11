@@ -266,6 +266,7 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
             search_usage_text=search_usage_text,
             active_task_count=task_count,
             max_completion_tokens=runtime.generation.max_tokens,
+            chat_id=ctx.msg.chat_id,
         ),
         metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
     )

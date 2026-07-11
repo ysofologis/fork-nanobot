@@ -683,6 +683,7 @@ def build_status_content(
     search_usage_text: str | None = None,
     active_task_count: int = 0,
     max_completion_tokens: int = 8192,
+    chat_id: str | None = None,
 ) -> str:
     """Build a human-readable runtime status snapshot.
 
@@ -723,6 +724,8 @@ def build_status_content(
         f"\u23f1 Uptime: {uptime}",
         f"\u26a1 Tasks: {active_task_count} active",
     ]
+    if chat_id:
+        lines.append(f"\U0001f4ac Chat ID: {chat_id}")
     if search_usage_text:
         lines.append(search_usage_text)
     return "\n".join(lines)
