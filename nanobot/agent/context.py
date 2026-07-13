@@ -3,6 +3,7 @@
 import base64
 import mimetypes
 import platform
+from loguru import logger
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -19,7 +20,9 @@ from nanobot.runtime_context import (
     RuntimeContextBlock,
     append_runtime_context,
 )
+from nanobot.session.goal_state import goal_state_runtime_lines
 from nanobot.utils.helpers import (
+    current_time_str,
     detect_image_mime,
     load_bundled_template,
     truncate_text_to_tokens,
@@ -223,10 +226,6 @@ class ContextBuilder:
         extra = [
             *goal_state_runtime_lines(session_metadata),
         ]
-        if runtime_state is not None and inbound_message is not None:
-            extra.extend(runtime_lines(runtime_state, inbound_message, root, skip=skip_runtime_lines))
-        if current_runtime_lines:
-            extra.extend(line for line in current_runtime_lines if line)
         runtime_ctx = self._build_runtime_context(
             channel,
             chat_id,
@@ -236,8 +235,15 @@ class ContextBuilder:
             supplemental_lines=extra or None,
         )
         user_content = self._build_user_content(current_message, media)
+        # Attach the built-in runtime context block (time/channel/etc + goal
+        # state) to the user content, then layer any provider-supplied runtime
+        # context blocks on top via append_runtime_context.
+        if isinstance(user_content, str):
+            base = f"{user_content}\n\n{runtime_ctx}"
+        else:
+            base = user_content + [{"type": "text", "text": runtime_ctx}]
         blocks = list(runtime_context_blocks or ()) if current_role == "user" else []
-        merged, runtime_context_meta = append_runtime_context(user_content, blocks)
+        merged, runtime_context_meta = append_runtime_context(base, blocks)
         messages = [
             {
                 "role": "system",
