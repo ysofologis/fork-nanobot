@@ -213,7 +213,7 @@ nanobot can trace OpenAI-compatible provider calls through Langfuse's OpenAI SDK
 Install the optional package in the same Python environment that runs nanobot:
 
 ```bash
-python -m pip install langfuse
+nanobot plugins enable langfuse
 ```
 
 Set Langfuse credentials before starting `nanobot agent`, `nanobot gateway`, or `nanobot serve`:
@@ -298,7 +298,7 @@ Tracing covers the providers that go through nanobot's OpenAI-compatible client 
 | `ovms` | LLM (local, OpenVINO Model Server) | [docs.openvino.ai](https://docs.openvino.ai/2026/model-server/ovms_docs_llm_quickstart.html) |
 | `vllm` | LLM (local, any OpenAI-compatible server) | — |
 | `nvidia` | LLM (NVIDIA NIM) | [build.nvidia.com](https://build.nvidia.com/) |
-| `openai_codex` | LLM (Codex, OAuth) | `nanobot provider login openai-codex` |
+| `openai_codex` | LLM (Codex, OAuth) | `nanobot provider login openai-codex --set-main` |
 | `github_copilot` | LLM (GitHub Copilot, OAuth) | `nanobot provider login github-copilot` |
 | `qianfan` | LLM (Baidu Qianfan) | [cloud.baidu.com](https://cloud.baidu.com/doc/qianfan/s/Hmh4suq26) |
 
@@ -660,61 +660,19 @@ nanobot agent -m "Reply with one short sentence."
 <details>
 <summary><b>OpenAI Codex (OAuth)</b></summary>
 
-Codex uses OAuth instead of API keys. Requires a ChatGPT Plus or Pro account. `nanobot provider login` stores the OAuth session outside config. A `providers.openai_codex` block is optional and is only needed for provider-specific settings such as a proxy.
+Codex uses OAuth instead of API keys and requires a ChatGPT Plus or Pro account. Authenticate it and make the current flagship model the active agent model with one command:
 
-**1. Login:**
 ```bash
-nanobot provider login openai-codex
+nanobot provider login openai-codex --set-main
 ```
 
-If the machine running nanobot cannot open a graphical browser, copy the printed URL into a real browser. For remote SSH login, open the URL locally, then paste the final `http://localhost:1455/auth/callback?...` redirect URL back into the terminal when prompted.
+Then run:
 
-**2. Optional proxy** (merge into `~/.nanobot/config.json` if Codex OAuth or Codex API traffic must use a proxy):
-
-```json
-{
-  "providers": {
-    "openai_codex": {
-      "proxy": "http://127.0.0.1:7890"
-    }
-  }
-}
-```
-
-The proxy applies to Codex OAuth token refresh, interactive token exchange, and Codex Responses API requests. It does not affect other providers; configure `proxy` separately on each supported provider that needs it.
-
-**3. Set model** (merge into `~/.nanobot/config.json`):
-```json
-{
-  "modelPresets": {
-    "codex": {
-      "provider": "openai_codex",
-      "model": "gpt-5.1-codex",
-      "reasoningEffort": "high"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "modelPreset": "codex"
-    }
-  }
-}
-```
-
-Use `reasoningEffort` in the preset to send a Codex reasoning effort such as `"low"`, `"medium"`, `"high"`, or another value supported by the selected model. When `provider` is explicitly `openai_codex`, the model name does not need the `openai-codex/` prefix.
-
-**4. Chat:**
 ```bash
 nanobot agent -m "Hello!"
-
-# Target a specific workspace/config locally
-nanobot agent -c ~/.nanobot-telegram/config.json -m "Hello!"
-
-# One-off workspace override on top of that config
-nanobot agent -c ~/.nanobot-telegram/config.json -w /tmp/nanobot-telegram-test -m "Hello!"
 ```
 
-> Docker users: use `docker run -it` for interactive OAuth login.
+For proxy, remote/headless login, model-name, or config-key errors, see [`troubleshooting.md`](./troubleshooting.md#provider-and-model-problems).
 
 </details>
 
@@ -1541,7 +1499,7 @@ Global settings that apply to all channels. Configure under the `channels` secti
 | `sendProgress` | `true` | Stream agent's text progress to the channel |
 | `sendToolHints` | `false` | Stream tool-call hints (e.g. `read_file("…")`) |
 | `showReasoning` | `true` | Allow channels to surface model reasoning/thinking content (DeepSeek-R1 `reasoning_content`, Anthropic `thinking_blocks`, inline `<think>` tags). Reasoning flows as a dedicated stream with `_reasoning_delta` / `_reasoning_end` markers — channels override `send_reasoning_delta` / `send_reasoning_end` to render in-place updates. Even with `true`, channels without those overrides stay no-op silently. Currently surfaced on CLI and WebSocket/WebUI (italic shimmer header, auto-collapses after the stream ends); Telegram / Slack / Discord / Feishu / WeChat / Matrix / Mattermost keep the base no-op until their bubble UI is adapted. Independent of `sendProgress`. |
-| `extractDocumentText` | `true` | Extract supported document/text attachments into the model prompt. Install parser dependencies with `nanobot plugins enable documents`. If you used document parsing before those parsers became optional, run that command after upgrading. Set to `false` to keep document content out of the prompt and include attachment path references instead. |
+| `extractDocumentText` | `true` | Extract supported document/text attachments into the model prompt. PDF, DOCX, XLSX, and PPTX readers are included in the standard installation. Set to `false` to keep document content out of the prompt and include attachment path references instead. |
 | `sendMaxRetries` | `3` | Max delivery attempts per outbound message, including the initial send (0-10 configured, minimum 1 actual attempt) |
 
 `channels.transcriptionProvider` and `channels.transcriptionLanguage` are deprecated compatibility fields. They remain as a read-only fallback for older configs, but new configuration should use top-level `transcription.provider` and `transcription.language`.

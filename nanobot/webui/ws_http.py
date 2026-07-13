@@ -26,6 +26,7 @@ from websockets.http11 import Response
 from nanobot.command.builtin import builtin_command_palette
 from nanobot.cron.session_turns import is_bound_cron_job
 from nanobot.cron.types import CronJob, CronSchedule
+from nanobot.runtime_context import public_history_messages
 from nanobot.triggers.local_types import LocalTrigger
 from nanobot.utils.subagent_channel_display import scrub_subagent_messages_for_channel
 from nanobot.webui.file_preview import WebUIFilePreviewError, file_preview_payload
@@ -161,6 +162,7 @@ class GatewayHTTPHandler:
         local_trigger_store: LocalTriggerStore | None = None,
         cron_pending_job_ids: Callable[[str], set[str]] | None = None,
         local_trigger_pending_ids: Callable[[str], set[str]] | None = None,
+        channel_feature_action: Callable[..., Any] | None = None,
         log: Any = logger,
     ) -> None:
         self.config = config
@@ -193,6 +195,7 @@ class GatewayHTTPHandler:
             error_response=_http_error,
             runtime_surface=runtime_surface,
             runtime_capabilities=self._capabilities,
+            channel_feature_action=channel_feature_action,
         )
 
     def workspace_controls_available(self, connection: Any) -> bool:
@@ -426,6 +429,9 @@ class GatewayHTTPHandler:
         messages = data.get("messages")
         if isinstance(messages, list):
             scrub_subagent_messages_for_channel(messages)
+            data["messages"] = public_history_messages(
+                message for message in messages if isinstance(message, dict)
+            )
         self.media.augment_media_urls(data)
         return _http_json_response(data)
 

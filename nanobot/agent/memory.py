@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 from loguru import logger
 
-from nanobot.session.manager import Session
+from nanobot.runtime_context import public_history_messages
+from nanobot.session.manager import Session, SessionManager
 from nanobot.utils.gitstore import GitStore
 from nanobot.utils.helpers import (
     ensure_dir,
@@ -30,7 +31,6 @@ from nanobot.utils.helpers import (
 from nanobot.utils.prompt_templates import render_template
 
 if TYPE_CHECKING:
-    from nanobot.session.manager import SessionManager
     from nanobot.utils.llm_runtime import LLMRuntime
 
 # ---------------------------------------------------------------------------
@@ -660,7 +660,10 @@ class MemoryStore:
     ) -> None:
         """Fallback: dump raw messages to history.jsonl without LLM summarization."""
         limit = max_chars if max_chars is not None else _RAW_ARCHIVE_MAX_CHARS
-        formatted = truncate_text(self._format_messages(messages), limit)
+        formatted = truncate_text(
+            self._format_messages(public_history_messages(messages)),
+            limit,
+        )
         self.append_history(
             f"[RAW] {len(messages)} messages\n"
             f"{formatted}",
@@ -701,12 +704,15 @@ class MemoryStore:
     def prune_dream_sessions(sessions_dir: Path, *, keep: int = 10) -> None:
         """Remove the oldest Dream session files, keeping only the N most recent.
 
-        Only files matching ``dream_*.jsonl`` are considered. Non-dream session
-        files are never touched.
+        Only current base64url-encoded Dream session keys are considered.
+        Non-dream session files are never touched.
         """
-        dream_files = sorted(
-            sessions_dir.glob("dream_*.jsonl"), key=lambda p: p.stat().st_mtime,
-        )
+        dream_files = []
+        for path in sessions_dir.glob("*.jsonl"):
+            decoded_key = SessionManager._decode_storage_key(path.stem)
+            if decoded_key is not None and decoded_key.startswith("dream:"):
+                dream_files.append(path)
+        dream_files.sort(key=lambda p: p.stat().st_mtime)
         if len(dream_files) <= keep:
             return
 
@@ -932,7 +938,9 @@ class Consolidator:
         """
         if not messages:
             return None
-        messages_to_summarize = summary_messages if summary_messages is not None else messages
+        messages_to_summarize = public_history_messages(
+            summary_messages if summary_messages is not None else messages
+        )
         try:
             formatted = MemoryStore._format_messages(messages_to_summarize)
             formatted = self._truncate_to_token_budget(formatted, runtime=runtime)
