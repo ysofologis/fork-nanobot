@@ -25,6 +25,17 @@ def test_append_and_read_roundtrip(tmp_path, monkeypatch) -> None:
     assert lines[0]["text"] == "hello"
 
 
+def test_append_stamps_created_at_ms(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.webui.transcript.time.time", lambda: 1_700_000_000.0)
+    key = "websocket:t-created-at"
+
+    append_transcript_object(key, {"event": "user", "chat_id": "t-created-at", "text": "hello"})
+
+    lines = read_transcript_lines(key)
+    assert lines[0]["created_at_ms"] == 1_700_000_000_000
+
+
 def _force_small_transcript_budget(monkeypatch, *, limit: int = 520, target: int = 260) -> None:
     monkeypatch.setattr("nanobot.webui.transcript._MAX_TRANSCRIPT_FILE_BYTES", limit)
     monkeypatch.setattr("nanobot.webui.transcript._TARGET_ACTIVE_TRANSCRIPT_BYTES", target)
@@ -289,6 +300,116 @@ def test_replay_delta_and_turn_end(tmp_path, monkeypatch) -> None:
     assert msgs[1]["content"] == "a"
     assert msgs[1]["reasoning"] == "think"
     assert msgs[1]["latencyMs"] == 42
+
+
+def test_replay_uses_persisted_created_at_ms() -> None:
+    msgs = replay_transcript_to_ui_messages(
+        [
+            {
+                "event": "user",
+                "chat_id": "t-created-at",
+                "text": "q",
+                "created_at_ms": 1_700_000_000_000,
+            },
+            {
+                "event": "message",
+                "chat_id": "t-created-at",
+                "kind": "tool_hint",
+                "text": "exec()",
+                "created_at_ms": 1_700_000_230_000,
+            },
+        ],
+    )
+
+    assert [message["createdAt"] for message in msgs] == [
+        1_700_000_000_000,
+        1_700_000_230_000,
+    ]
+
+
+def test_thread_response_does_not_mark_completed_message_tool_tail_pending(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    key = "websocket:cron-tail"
+    turn_id = "cron:job:run"
+    for ev in (
+        {
+            "event": "message",
+            "chat_id": "cron-tail",
+            "text": 'message({"content":"Cron test"})',
+            "kind": "tool_hint",
+            "tool_events": [{
+                "phase": "start",
+                "call_id": "call-message",
+                "name": "message",
+                "arguments": {"content": "Cron test"},
+            }],
+            "turn_id": turn_id,
+            "turn_phase": "activity",
+            "turn_seq": 5,
+        },
+        {
+            "event": "message",
+            "chat_id": "cron-tail",
+            "text": "Cron test",
+            "source": {"kind": "cron", "label": "one-min-test"},
+            "turn_id": turn_id,
+            "turn_phase": "answer",
+            "turn_seq": 6,
+        },
+        {
+            "event": "message",
+            "chat_id": "cron-tail",
+            "text": "",
+            "kind": "progress",
+            "tool_events": [{
+                "phase": "end",
+                "call_id": "call-message",
+                "name": "message",
+                "arguments": {"content": "Cron test"},
+                "result": "ok",
+            }],
+            "turn_id": turn_id,
+            "turn_phase": "activity",
+            "turn_seq": 7,
+        },
+        {
+            "event": "turn_end",
+            "chat_id": "cron-tail",
+            "turn_id": turn_id,
+            "turn_phase": "complete",
+            "turn_seq": 8,
+        },
+    ):
+        append_transcript_object(key, ev)
+
+    out = build_webui_thread_response(key)
+
+    assert out is not None
+    assert out["has_pending_tool_calls"] is False
+    assert out["messages"][-1]["kind"] == "trace"
+    assert out["messages"][-2]["content"] == "Cron test"
+
+
+def test_thread_response_marks_unfinished_tool_tail_pending(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    key = "websocket:active-tail"
+    append_transcript_object(
+        key,
+        {
+            "event": "message",
+            "chat_id": "active-tail",
+            "text": 'exec({"command":"date"})',
+            "kind": "tool_hint",
+        },
+    )
+
+    out = build_webui_thread_response(key)
+
+    assert out is not None
+    assert out["has_pending_tool_calls"] is True
 
 
 def test_replay_preserves_turn_metadata(tmp_path, monkeypatch) -> None:
