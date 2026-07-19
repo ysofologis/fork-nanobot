@@ -14,7 +14,6 @@ from nanobot.agent.tools.schema import (
     StringSchema,
     tool_parameters_schema,
 )
-from nanobot.config.paths import get_media_dir
 from nanobot.config_base import Base
 from nanobot.providers.image_generation import (
     ImageGenerationError,
@@ -134,6 +133,8 @@ class ImageGenerationTool(Tool):
         return cls(**kwargs)
 
     def _resolve_reference_image(self, value: str) -> str:
+        from nanobot.config.paths import get_media_dir
+
         access = current_tool_workspace(self.workspace, restrict_to_workspace=True)
         workspace = access.project_path or self.workspace
         try:

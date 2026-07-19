@@ -1030,14 +1030,47 @@ class AgentLoop:
                         active_session_keys=self._pending_queues.keys(),
                     )
                     continue
-                except asyncio.CancelledError:
-                    # Preserve real task cancellation so shutdown can complete cleanly.
-                    # Only ignore non-task CancelledError signals that may leak from integrations.
-                    if not self._running or task_is_cancelling():
-                        raise
-                    logger.warning(
-                        "Ignoring leaked CancelledError while consuming inbound messages"
+            except asyncio.CancelledError:
+                # Preserve real task cancellation so shutdown can complete cleanly.
+                # Only ignore non-task CancelledError signals that may leak from integrations.
+                if not self._running or task_is_cancelling():
+                    raise
+                logger.warning(
+                    "Ignoring leaked CancelledError while consuming inbound messages"
+                )
+                continue
+            except Exception as e:
+                logger.warning("Error consuming inbound message: {}, continuing...", e)
+                continue
+
+            raw = msg.content.strip()
+            effective_key = self._effective_session_key(msg)
+            if await agent_context.handle_runtime_control(self, msg, self.tools):
+                continue
+
+            # agent-colab: |bot-name> content → forward to target agent via bus
+            target_agent, clean = parse_agent_route(raw)
+            if target_agent:
+                if target_agent != self.bus.agent_id:
+                    await forward_to_target_agent(
+                        self.bus,
+                        target_agent=target_agent,
+                        content=clean or "...",
+                        sender=self.bus.agent_id,
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        sender_id=msg.sender_id,
                     )
+                    # Confirm back to sender
+                    from nanobot.bus.events import OutboundMessage
+
+                    confirm = OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=f"Forwarded to *{target_agent}*: {clean}",
+                        reply_to=msg.sender_id,
+                    )
+                    await self.bus.outbound.put(confirm)
                     continue
                 # Addressed to this agent — strip prefix and process normally
                 raw = clean
