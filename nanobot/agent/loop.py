@@ -29,6 +29,7 @@ from nanobot.agent.model_runtime import ModelRuntimeResolver
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
+from nanobot.agent.tools.exec_session import ExecSessionManager
 from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
@@ -81,6 +82,7 @@ from nanobot.session.manager import (
     replay_max_messages_for_context,
 )
 from nanobot.triggers.local_turns import LocalTriggerTurnCoordinator
+from nanobot.utils.cancellation import task_is_cancelling
 from nanobot.utils.document import extract_documents, reference_non_image_attachments
 from nanobot.utils.helpers import image_placeholder_text
 from nanobot.utils.helpers import truncate_text as truncate_text_fn
@@ -356,6 +358,7 @@ class AgentLoop:
         # One file-read/write tracker per logical session. The tool registry is
         # shared by this loop, so tools resolve the active state via contextvars.
         self._file_state_store = FileStateStore()
+        self._exec_session_manager = ExecSessionManager()
         self.runner = AgentRunner()
         self.subagents = SubagentManager(
             workspace=workspace,
@@ -541,6 +544,7 @@ class AgentLoop:
             bus=self.bus,
             subagent_manager=self.subagents,
             cron_service=self.cron_service,
+            exec_session_manager=self._exec_session_manager,
             sessions=self.sessions,
             provider_snapshot_loader=provider_snapshot_loader,
             image_generation_provider_configs=self._image_generation_provider_configs,
@@ -1026,44 +1030,14 @@ class AgentLoop:
                         active_session_keys=self._pending_queues.keys(),
                     )
                     continue
-            except asyncio.CancelledError:
-                # Preserve real task cancellation so shutdown can complete cleanly.
-                # Only ignore non-task CancelledError signals that may leak from integrations.
-                if not self._running or asyncio.current_task().cancelling():
-                    raise
-                continue
-            except Exception as e:
-                logger.warning("Error consuming inbound message: {}, continuing...", e)
-                continue
-
-            raw = msg.content.strip()
-            effective_key = self._effective_session_key(msg)
-            if await agent_context.handle_runtime_control(self, msg, self.tools):
-                continue
-            raw = msg.content.strip()
-
-            # agent-colab: |bot-name> content → forward to target agent via bus
-            target_agent, clean = parse_agent_route(raw)
-            if target_agent:
-                if target_agent != self.bus.agent_id:
-                    await forward_to_target_agent(
-                        self.bus,
-                        target_agent=target_agent,
-                        content=clean or "...",
-                        sender=self.bus.agent_id,
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        sender_id=msg.sender_id,
+                except asyncio.CancelledError:
+                    # Preserve real task cancellation so shutdown can complete cleanly.
+                    # Only ignore non-task CancelledError signals that may leak from integrations.
+                    if not self._running or task_is_cancelling():
+                        raise
+                    logger.warning(
+                        "Ignoring leaked CancelledError while consuming inbound messages"
                     )
-                    # Confirm back to sender
-                    from nanobot.bus.events import OutboundMessage
-                    confirm = OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content=f"Forwarded to *{target_agent}*: {clean}",
-                        reply_to=msg.sender_id,
-                    )
-                    await self.bus.outbound.put(confirm)
                     continue
                 # Addressed to this agent — strip prefix and process normally
                 raw = clean
