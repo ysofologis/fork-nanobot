@@ -85,7 +85,12 @@ from nanobot.config.paths import get_workspace_path, is_default_workspace  # noq
 from nanobot.config.schema import Config  # noqa: E402
 from nanobot.security.network import is_loopback_host  # noqa: E402
 from nanobot.utils.evaluator import evaluate_response, resolve_evaluator_prompt  # noqa: E402
-from nanobot.utils.helpers import sync_workspace_templates  # noqa: E402
+from nanobot.utils.helpers import (  # noqa: E402
+    sanitize_surrogates as _sanitize_surrogates,
+)
+from nanobot.utils.helpers import (  # noqa: E402
+    sync_workspace_templates,
+)
 from nanobot.utils.restart import (  # noqa: E402
     consume_restart_notice_from_env,
     format_restart_completed_message,
@@ -99,6 +104,10 @@ from nanobot.webui.build import (  # noqa: E402
 from nanobot.webui.sidebar_state import read_webui_sidebar_state  # noqa: E402
 
 
+def _signal_name(signum: int) -> str:
+    with suppress(ValueError):
+        return signal.Signals(signum).name
+    return f"signal {signum}"
 def _sanitize_surrogates(text: str) -> str:
     """Reconstruct surrogate pairs into real characters; replace lone surrogates.
 
@@ -1858,6 +1867,7 @@ def _run_gateway(
     from nanobot.bus.factory import create_bus
     from nanobot.bus.runtime_events import RuntimeEventBus
     from nanobot.channels.manager import ChannelManager
+    from nanobot.config.watcher import watch_config_file
     from nanobot.cron.bound_runner import run_bound_cron_job
     from nanobot.cron.service import CronJobSkippedError, CronService
     from nanobot.cron.session_turns import is_bound_cron_job
@@ -2323,7 +2333,16 @@ def _run_gateway(
         try:
             await bus.start()
             await cron.start()
+            # Re-read once on first admission to close the watcher subscription window.
+            agent.runtime_resolver.invalidate()
             tasks = [
+                asyncio.create_task(
+                    watch_config_file(
+                        Path(config_path),
+                        lambda: agent.runtime_resolver.invalidate(),
+                    ),
+                    name="nanobot-config-watcher",
+                ),
                 asyncio.create_task(agent.run(), name="nanobot-agent-loop"),
                 asyncio.create_task(channels.start_all(), name="nanobot-channels"),
                 asyncio.create_task(

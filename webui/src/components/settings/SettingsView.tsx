@@ -231,6 +231,7 @@ const DEFERRED_MODEL_LIST_PROVIDERS = new Set([
   "byteplus_coding_plan",
   "huggingface",
   "lm_studio",
+  "modelscope",
   "novita",
   "ollama",
   "openrouter",
@@ -1854,10 +1855,7 @@ export function SettingsView({
   return (
     <div
       className={cn(
-        "flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row",
-        showSidebar
-          ? "bg-[radial-gradient(circle_at_50%_0%,hsl(var(--muted))_0%,hsl(var(--background))_42%)]"
-          : "bg-background",
+        "flex min-h-0 flex-1 flex-col overflow-hidden bg-background lg:flex-row",
       )}
     >
       {showSidebar ? (
@@ -2013,7 +2011,7 @@ function SettingsSidebar({
   return (
     <aside
       className={cn(
-        "flex w-full shrink-0 flex-col border-b border-border/55 bg-card/62 px-3 pb-2 shadow-[inset_0_-1px_0_rgba(255,255,255,0.55)] backdrop-blur-xl dark:bg-card/45 dark:shadow-none lg:w-[17rem] lg:border-b-0 lg:border-r lg:px-3 lg:pb-4 lg:shadow-[inset_-1px_0_0_rgba(255,255,255,0.55)]",
+        "flex w-full shrink-0 flex-col bg-sidebar px-3 pb-2 lg:w-[17rem] lg:px-3 lg:pb-4",
         hostChromeInset ? "pt-[4.25rem] lg:pt-[4.25rem]" : "pt-4 lg:pt-4",
       )}
     >
@@ -2046,7 +2044,7 @@ function SettingsSidebar({
               className={cn(
                 "flex h-9 w-auto shrink-0 snap-start items-center gap-2 rounded-full px-3 text-left text-[13px] font-medium transition-colors lg:w-full lg:rounded-[10px] lg:px-2.5",
                 active
-                  ? "bg-muted/90 text-foreground shadow-[inset_0_0_0_1px_rgba(0,0,0,0.025)]"
+                  ? "bg-sidebar-accent text-foreground"
                   : "text-muted-foreground/78 hover:bg-muted/45 hover:text-foreground",
               )}
             >
@@ -7836,6 +7834,7 @@ const PROVIDER_ICONS: Record<string, LucideIcon> = {
   deepseek: Waves,
   zhipu: Grid3X3,
   dashscope: Cloud,
+  modelscope: Layers,
   moonshot: Moon,
   minimax: Zap,
   minimax_anthropic: Brain,
