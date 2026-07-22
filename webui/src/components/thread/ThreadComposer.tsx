@@ -97,6 +97,8 @@ import { cn } from "@/lib/utils";
 
 const VOICE_SHORTCUT_CODE = "KeyD";
 const VOICE_SHORTCUT_ARIA = "Control+Shift+D";
+const VOICE_ERROR_VISIBLE_MS = 3_500;
+const VOICE_ERROR_FADE_MS = 500;
 type VoiceShortcutPlatform = "apple" | "chromeos" | "linux" | "other" | "windows";
 
 function formatBytes(n: number): string {
@@ -286,6 +288,7 @@ interface SlashPaletteCommand {
   title: string;
   description: string;
   icon: string;
+  kind?: "skill";
   argHint?: string;
   detail: string;
   badge?: string;
@@ -818,6 +821,7 @@ export function ThreadComposer({
   const { t } = useTranslation();
   const [value, setValue] = useState("");
   const [inlineError, setInlineError] = useState<string | null>(null);
+  const [voiceErrorFading, setVoiceErrorFading] = useState(false);
   const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [cliAppMenuDismissed, setCliAppMenuDismissed] = useState(false);
@@ -838,6 +842,7 @@ export function ThreadComposer({
   const skipNextQueuedFlushRef = useRef(false);
   const skipQueuedPromptPersistRef = useRef(false);
   const voiceShortcutDownRef = useRef(false);
+  const voiceErrorFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isHero = variant === "hero";
   const voiceShortcutLabel = useMemo(getVoiceShortcutLabel, []);
   const queuedPromptStorageKey = useMemo(
@@ -1009,6 +1014,7 @@ export function ThreadComposer({
             description,
             detail: description,
             icon: "brain",
+            kind: "skill" as const,
             recent: recentSlashCommands.includes(command),
           };
         })
@@ -1285,10 +1291,28 @@ export function ThreadComposer({
     resizeTextarea();
   }, [resizeTextarea]);
 
-  const clearInlineError = useCallback(() => setInlineError(null), []);
+  const clearVoiceErrorTimers = useCallback(() => {
+    if (voiceErrorFadeTimerRef.current !== null) clearTimeout(voiceErrorFadeTimerRef.current);
+    voiceErrorFadeTimerRef.current = null;
+  }, []);
+  const clearInlineError = useCallback(() => {
+    clearVoiceErrorTimers();
+    setVoiceErrorFading(false);
+    setInlineError(null);
+  }, [clearVoiceErrorTimers]);
   const setVoiceError = useCallback((key: VoiceRecorderErrorKey) => {
+    clearVoiceErrorTimers();
+    setVoiceErrorFading(false);
     setInlineError(t(`thread.composer.voiceErrors.${key}`));
-  }, [t]);
+    voiceErrorFadeTimerRef.current = setTimeout(() => {
+      setVoiceErrorFading(true);
+      voiceErrorFadeTimerRef.current = setTimeout(() => {
+        setInlineError(null);
+        setVoiceErrorFading(false);
+        voiceErrorFadeTimerRef.current = null;
+      }, VOICE_ERROR_FADE_MS);
+    }, VOICE_ERROR_VISIBLE_MS);
+  }, [clearVoiceErrorTimers, t]);
   const voiceRecorder = useVoiceRecorder({
     disabled,
     onClearError: clearInlineError,
@@ -1297,6 +1321,8 @@ export function ThreadComposer({
     onTranscribeAudio,
     wantsWav: transcriptionProvider === "xiaomi_mimo",
   });
+
+  useEffect(() => () => clearVoiceErrorTimers(), [clearVoiceErrorTimers]);
 
   useEffect(() => {
     if (!onTranscribeAudio) return;
@@ -1796,11 +1822,9 @@ export function ThreadComposer({
       <div
         className={cn(
           "group/composer relative mx-auto flex w-full flex-col overflow-visible transition-all duration-200",
-          "after:pointer-events-none after:absolute after:inset-[-1px] after:rounded-[inherit] after:border after:border-blue-300/75 after:opacity-0 after:transition-opacity after:duration-200 focus-within:after:opacity-100 dark:after:border-blue-400/55",
           isHero
-            ? "max-w-[58rem] rounded-[28px] border border-black/[0.035] bg-card shadow-[0_20px_55px_rgba(15,23,42,0.08)] dark:border-white/[0.06] dark:shadow-[0_24px_55px_rgba(0,0,0,0.34)]"
-            : "max-w-[49.5rem] rounded-[22px] border border-black/[0.035] bg-card shadow-[0_12px_30px_rgba(15,23,42,0.07)] dark:border-white/[0.06] dark:shadow-[0_16px_34px_rgba(0,0,0,0.28)]",
-          "focus-within:border-blue-300/75 dark:focus-within:border-blue-400/55",
+            ? "max-w-[58rem] rounded-[28px] bg-muted/30 focus-within:bg-muted/50 dark:bg-card dark:focus-within:bg-white/[0.06]"
+            : "max-w-[49.5rem] rounded-[22px] bg-muted/30 focus-within:bg-muted/50 dark:bg-card dark:focus-within:bg-white/[0.06]",
           disabled && "opacity-60",
           isDragging && "ring-2 ring-primary/40 motion-reduce:ring-0 motion-reduce:border-primary",
           goalState?.active &&
@@ -1905,8 +1929,9 @@ export function ThreadComposer({
           <div
             role="alert"
             className={cn(
-              "mx-3 mb-1 rounded-md border border-destructive/40 bg-destructive/8 px-2.5 py-1",
-              "text-[11.5px] font-medium text-destructive",
+              "mx-3 mb-1 max-h-10 overflow-hidden rounded-md border border-destructive/40 bg-destructive/8 px-2.5 py-1",
+              "text-[11.5px] font-medium text-destructive transition-[max-height,margin,padding,opacity] duration-500 ease-out",
+              voiceErrorFading && "mb-0 max-h-0 border-transparent py-0 opacity-0",
             )}
           >
             {inlineError}
@@ -1914,13 +1939,13 @@ export function ThreadComposer({
         ) : null}
         <div
           className={cn(
-            "flex flex-wrap items-center justify-between gap-y-2",
+            "flex flex-nowrap items-center",
             isHero
               ? cn("gap-x-1.5 px-3 sm:px-4", showProjectPicker ? "pb-1.5" : "pb-3.5")
               : "gap-x-2 px-2.5 pb-2 sm:px-3",
           )}
         >
-          <div className={cn("flex min-w-0 flex-1 basis-[8rem] items-center", isHero ? "gap-1.5" : "gap-2")}>
+          <div className={cn("flex min-w-0 flex-1 basis-0 items-center", isHero ? "gap-1.5" : "gap-2")}>
             <input
               ref={fileInputRef}
               type="file"
@@ -2287,8 +2312,8 @@ function ComposerModelBadge({
         interactive && "cursor-pointer hover:bg-accent/55 hover:text-foreground",
         needsSetup && "border-amber-500/35 bg-amber-50/70 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200",
         isHero
-          ? "h-8 max-w-[min(12.5rem,44vw)] gap-1.5 px-2 text-[11.5px]"
-          : "h-9 max-w-[min(12rem,44vw)] gap-2 px-2.5 text-[12px]",
+          ? "h-8 max-w-[min(7.5rem,32vw)] gap-1.5 px-2 text-[11.5px] sm:max-w-[min(12.5rem,44vw)]"
+          : "h-9 max-w-[min(7.5rem,32vw)] gap-2 px-2.5 text-[12px] sm:max-w-[min(12rem,44vw)]",
       )}
     >
       <span
@@ -2582,6 +2607,7 @@ function SlashCommandPalette({
         {commands.map((command, index) => {
           const Icon = COMMAND_ICONS[command.icon] ?? CircleHelp;
           const selected = index === selectedIndex;
+          const isSkill = command.kind === "skill";
           const commandKey = slashCommandI18nKey(command.command);
           const title = t(`thread.composer.slash.commands.${commandKey}.title`, {
             defaultValue: command.title,
@@ -2617,23 +2643,34 @@ function SlashCommandPalette({
                 <Icon className="h-4 w-4" />
               </span>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-2">
-                <span className="min-w-0 truncate text-[13.5px] font-semibold tracking-normal text-foreground">
+                <span
+                  className={cn(
+                    "text-[13.5px] font-semibold tracking-normal text-foreground",
+                    isSkill
+                      ? "max-w-full shrink-0 break-all sm:max-w-[55%]"
+                      : "min-w-0 truncate",
+                  )}
+                >
                   {title}
                 </span>
                 <span className="min-w-0 truncate text-[13px] text-muted-foreground">
                   {command.detail || description}
                 </span>
               </span>
-              <span className="ml-2 flex max-w-[42%] shrink-0 items-center gap-1.5 sm:max-w-none">
-                {command.badge || command.recent ? (
-                  <span className="hidden rounded-full bg-foreground/[0.055] px-2 py-1 text-[11px] font-medium text-muted-foreground sm:inline-flex">
-                    {command.badge ?? t("thread.composer.slash.badges.recent")}
-                  </span>
-                ) : null}
-                <span className="font-mono text-[12px] text-muted-foreground/60">
-                  {command.argHint ? `${command.command} ${command.argHint}` : command.command}
+              {!isSkill || command.badge || command.recent ? (
+                <span className="ml-2 flex max-w-[42%] shrink-0 items-center gap-1.5 sm:max-w-none">
+                  {command.badge || command.recent ? (
+                    <span className="hidden rounded-full bg-foreground/[0.055] px-2 py-1 text-[11px] font-medium text-muted-foreground sm:inline-flex">
+                      {command.badge ?? t("thread.composer.slash.badges.recent")}
+                    </span>
+                  ) : null}
+                  {!isSkill ? (
+                    <span className="font-mono text-[12px] text-muted-foreground/60">
+                      {command.argHint ? `${command.command} ${command.argHint}` : command.command}
+                    </span>
+                  ) : null}
                 </span>
-              </span>
+              ) : null}
             </button>
           );
         })}

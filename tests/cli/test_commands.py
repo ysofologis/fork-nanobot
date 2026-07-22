@@ -2772,12 +2772,14 @@ def test_gateway_local_trigger_queue_submits_agent_turns(
             self.context = _FakeContext()
             self.sessions = kwargs["session_manager"]
             self.submit_local_trigger_turn = AsyncMock()
+            self.runtime_resolver = MagicMock()
             seen["agent"] = self
 
         def _schedule_background(self, _coro) -> None:
             return None
 
         async def run(self) -> None:
+            self.runtime_resolver.invalidate.assert_called_once_with()
             await asyncio.Event().wait()
 
         async def close_mcp(self) -> None:
@@ -3006,6 +3008,7 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
             self.model = "test-model"
             self.provider = object()
             self.sessions = _FakeSessionManager()
+            self.runtime_resolver = MagicMock()
 
         def llm_runtime(self) -> None:
             return None
@@ -3199,6 +3202,7 @@ def test_gateway_shutdown_lets_agent_task_own_mcp_cleanup(
             self.model = "test-model"
             self.provider = object()
             self.sessions = _FakeSessionManager()
+            self.runtime_resolver = MagicMock()
 
         def llm_runtime(self) -> None:
             return None
@@ -3297,6 +3301,7 @@ def test_gateway_shutdown_event_exits_forever_runtime_tasks(
             self.model = "test-model"
             self.provider = object()
             self.sessions = _FakeSessionManager()
+            self.runtime_resolver = MagicMock()
 
         def llm_runtime(self) -> None:
             return None

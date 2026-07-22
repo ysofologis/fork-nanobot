@@ -335,7 +335,7 @@ describe("ThreadComposer", () => {
     expect(input.className).toContain("text-[16px]");
     expect(input.parentElement?.parentElement?.className).toContain("max-w-[49.5rem]");
     expect(input.parentElement?.parentElement?.className).toContain("rounded-[22px]");
-    expect(input.parentElement?.parentElement?.className).toContain("shadow-[0_12px_30px_rgba(15,23,42,0.07)]");
+    expect(input.parentElement?.parentElement?.className).not.toContain("shadow-");
     expect(screen.getByRole("button", { name: "Attach files" }).className).toContain("bg-card");
     expect(screen.getByRole("button", { name: "Send message" }).className).toContain("bg-foreground");
     expect(screen.queryByText(/Enter to send/)).not.toBeInTheDocument();
@@ -437,6 +437,49 @@ describe("ThreadComposer", () => {
 
     await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByLabelText("Message input")).toHaveValue("one recording"));
+  });
+
+  it("distinguishes a missing microphone from a blocked permission", async () => {
+    const { getUserMedia } = mockVoiceRecorder();
+    getUserMedia.mockRejectedValue(Object.assign(new Error("no microphone"), {
+      name: "NotFoundError",
+    }));
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        onTranscribeAudio={vi.fn(async () => "unused")}
+        placeholder="Type your message..."
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("No microphone was found. Connect a microphone and try again.")).toBeInTheDocument();
+    });
+  });
+
+  it("clears a previous voice error when retrying microphone access", async () => {
+    const { getUserMedia } = mockVoiceRecorder();
+    getUserMedia.mockRejectedValueOnce(new Error("permission denied"));
+    const onTranscribeAudio = vi.fn(async () => "voice retry");
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        onTranscribeAudio={onTranscribeAudio}
+        placeholder="Type your message..."
+      />,
+    );
+
+    const voiceButton = screen.getByRole("button", { name: "Voice input" });
+    fireEvent.click(voiceButton);
+    await waitFor(() => expect(screen.getByText("Allow microphone access in the address bar, then retry.")).toBeInTheDocument());
+
+    fireEvent.click(voiceButton);
+
+    await waitFor(() => expect(screen.queryByText("Allow microphone access in the address bar, then retry.")).not.toBeInTheDocument());
+    expect(await screen.findByLabelText("Recording 0:00")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Stop recording" }));
   });
 
   it("supports press-and-hold voice recording", async () => {
@@ -1146,14 +1189,15 @@ describe("ThreadComposer", () => {
     });
   });
 
-  it("opens skills only from a $ reference anywhere", () => {
+  it("opens skills only from a $ reference and prioritizes the skill name", () => {
+    const skillName = "arxiv-intelligence-filter";
     render(
         <ThreadComposer
           onSend={vi.fn()}
           placeholder="Type your message..."
           skills={[{
-            name: "github",
-            description: "Work with pull requests and issues",
+            name: skillName,
+            description: "Fetch and summarize the latest AI research papers every day",
             source: "builtin",
             available: true,
           }]}
@@ -1165,15 +1209,18 @@ describe("ThreadComposer", () => {
     fireEvent.change(input, { target: { value: "/git", selectionStart: 4 } });
     expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
 
-    fireEvent.change(input, { target: { value: "please use $git", selectionStart: 15 } });
+    fireEvent.change(input, { target: { value: "please use $arxiv", selectionStart: 17 } });
 
     const palette = screen.getByRole("listbox", { name: "Slash commands" });
-    expect(within(palette).getByRole("option", { name: /github/i })).toHaveTextContent("$github");
+    const option = within(palette).getByRole("option", { name: new RegExp(skillName, "i") });
+    const name = within(option).getByText(skillName);
+    expect(name).not.toHaveClass("truncate");
+    expect(within(option).queryByText(`$${skillName}`)).not.toBeInTheDocument();
     expect(within(palette).queryByText("/model")).not.toBeInTheDocument();
 
     fireEvent.keyDown(input, { key: "Tab" });
 
-    expect(input).toHaveValue("please use $github ");
+    expect(input).toHaveValue(`please use $${skillName} `);
   });
 
   it("shows right-side source badges so users can distinguish CLI apps from MCP servers", () => {

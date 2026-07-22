@@ -204,6 +204,8 @@ These variables are process-level switches. Set them in the same terminal, servi
 | `NANOBOT_SKIP_WIZARD` | unset | Set to `1` to skip `nanobot onboard --wizard` after one-command install. |
 | `NANOBOT_SKIP_WEBUI_BUILD` | unset | Set to `1` to skip bundling the WebUI during package builds. |
 | `NANOBOT_FORCE_WEBUI_BUILD` | unset | Set to `1` to rebuild the bundled WebUI even when `nanobot/web/dist/index.html` already exists. |
+| `NANOBOT_EXTRAS` | unset | Docker build argument containing comma-separated Python extras such as `bedrock`. |
+| `NANOBOT_CHANNELS` | `whatsapp` | Docker build argument containing comma-separated channels whose manifest dependencies are preinstalled. |
 | `NANOBOT_API_URL` | `http://127.0.0.1:8765` | Gateway target for the Vite WebUI dev server proxy. |
 
 Internal variables such as `NANOBOT_RESTART_*` and `NANOBOT_PATH_*` are set by nanobot itself and are not a supported user configuration surface.
@@ -252,6 +254,7 @@ Tracing covers the providers that go through nanobot's OpenAI-compatible client 
 > - **OpenCode Zen / Go**: `providers.opencode` (canonical Zen), the legacy-compatible `providers.opencodeZen`, and `providers.opencodeGo` use the same `OPENCODE_API_KEY`, but route to different OpenCode gateways. These providers use OpenCode's OpenAI-compatible `chat/completions` endpoints; choose model IDs from that endpoint family.
 > - **Zhipu Coding Plan**: If you're on Zhipu's coding plan, set `"apiBase": "https://open.bigmodel.cn/api/coding/paas/v4"` in your zhipu provider config.
 > - **Alibaba Cloud BaiLian**: If you're using Alibaba Cloud BaiLian's OpenAI-compatible endpoint, set `"apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1"` in your dashscope provider config.
+> - **ModelScope**: If you're using ModelScope's OpenAI-compatible endpoint, set `"apiBase": "https://api-inference.modelscope.cn/v1"` in your modelscope provider config.
 > - **StepFun Step Plan**: If you're on StepFun's Step Plan subscription, set `"apiBase": "https://api.stepfun.ai/step_plan/v1"` in your stepfun provider config. Supported models include `step-3.5-flash`, `step-3.5-flash-2603`, and `step-router-v1`.
 > - **Step Fun (Mainland China)**: If your API key is from Step Fun's mainland China platform (stepfun.com), set `"apiBase": "https://api.stepfun.com/v1"` in your stepfun provider config.
 > - **Xiaomi MiMo thinking mode**: MiMo models (e.g. `mimo-v2.5-pro`) default to enabled thinking. Use `agents.defaults.reasoningEffort: "none"` to disable it, or `"low"` / `"medium"` / `"high"` to keep it on. Omitting the field preserves the provider's per-model default.
@@ -286,6 +289,7 @@ Tracing covers the providers that go through nanobot's OpenAI-compatible client 
 | `siliconflow` | LLM (SiliconFlow/硅基流动) | [siliconflow.cn](https://siliconflow.cn) |
 | `novita` | LLM (Novita AI OpenAI-compatible gateway) | [novita.ai](https://novita.ai) |
 | `dashscope` | LLM (Qwen) | [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com) |
+| `modelscope` | LLM (ModelScope/魔搭社区) + Image generation | [modelscope.cn](https://modelscope.cn) |
 | `moonshot` | LLM (Moonshot/Kimi) | [platform.kimi.com](https://platform.kimi.com?aff=nanobot) |
 | `kimi_coding` | LLM (Kimi Coding Plan, Anthropic Messages API) | [platform.kimi.com](https://platform.kimi.com?aff=nanobot) |
 | `zhipu` | LLM (Zhipu GLM) | [open.bigmodel.cn](https://open.bigmodel.cn) |
@@ -673,6 +677,25 @@ Then run:
 ```bash
 nanobot agent -m "Hello!"
 ```
+
+To opt in to Codex Fast mode, merge this provider setting into `config.json`:
+
+```json
+{
+  "providers": {
+    "openaiCodex": {
+      "extraBody": {
+        "service_tier": "priority"
+      }
+    }
+  }
+}
+```
+
+`priority` is the Responses API request value used by Codex Fast mode. The setting only works
+for models and accounts that support Fast mode; remove `service_tier` to return to standard
+processing. Fast mode consumes Codex credits at a higher rate. See the
+[OpenAI Codex rate card](https://help.openai.com/en/articles/20001106) for current details.
 
 For proxy, remote/headless login, model-name, or config-key errors, see [`troubleshooting.md`](./troubleshooting.md#provider-and-model-problems).
 
@@ -1906,6 +1929,16 @@ MCP tools are automatically discovered and registered on startup. The LLM can us
 > For production deployments, set both `"restrictToWorkspace": true` and `"tools.exec.sandbox": "bwrap"` in your config. `restrictToWorkspace` enables nanobot's application-level workspace guards; `tools.exec.sandbox` provides process-level isolation for shell commands.
 
 For API keys, tokens, and other secrets, see [Environment Variables for Secrets](#environment-variables-for-secrets) — avoid storing them directly in `config.json`.
+
+> [!NOTE]
+> When a restricted WebUI chat selects a project outside the configured agent
+> workspace, that project becomes the normal file and shell boundary. Nanobot
+> adds capability-specific, read-only access for built-in skills, the agent
+> workspace's `skills/` directory, and the exact agent
+> `memory/history.jsonl` file. Neighboring memory/profile files and all
+> cross-workspace writes remain denied. Agent-owned `SOUL.md` and `USER.md` are
+> assembled into model context directly; this does not grant file tools broader
+> access to the agent workspace.
 
 | Option | Default | Description |
 |--------|---------|-------------|
