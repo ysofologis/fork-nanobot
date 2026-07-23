@@ -33,16 +33,14 @@ from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, res
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.self import MyTool
+from nanobot.agent.turn_delivery import (
+    TurnDelivery,
+    TurnDeliveryFactory,
+)
+from nanobot.agent.turn_delivery import TurnRoute as TurnRoute
 from nanobot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
 from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot.bus.outbound_events import (
-    RetryWaitEvent,
-    StreamDeltaEvent,
-    StreamedResponseEvent,
-    StreamEndEvent,
-    outbound_message_for_event,
-)
-from nanobot.bus.progress import build_bus_progress_callback
+from nanobot.bus.outbound_events import StreamedResponseEvent
 from nanobot.bus.queue import MessageBus
 from nanobot.bus.runtime_events import (
     RuntimeEventBus,
@@ -60,6 +58,7 @@ from nanobot.runtime_context import (
     RuntimeContextProvider,
     append_runtime_context,
     resolve_runtime_context,
+    runtime_context_blocks_from_metadata,
 )
 from nanobot.security.workspace_access import (
     WorkspaceScopeResolver,
@@ -79,6 +78,10 @@ from nanobot.session.manager import (
     Session,
     SessionManager,
     replay_max_messages_for_context,
+)
+from nanobot.session.model_selection import (
+    SESSION_MODEL_PRESET_METADATA_KEY,
+    model_preset_from_metadata,
 )
 from nanobot.triggers.local_turns import LocalTriggerTurnCoordinator
 from nanobot.utils.cancellation import task_is_cancelling
@@ -115,15 +118,6 @@ class TurnKind(Enum):
     SYSTEM = auto()
 
 
-@dataclass(frozen=True)
-class TurnRoute:
-    """Where a turn response is delivered, separate from its execution input."""
-
-    channel: str
-    chat_id: str
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
 @dataclass
 class StateTraceEntry:
     state: TurnState
@@ -139,9 +133,9 @@ class TurnContext:
     session_key: str
     state: TurnState
     turn_id: str
-    runtime: LLMRuntime
+    runtime: LLMRuntime | None
     kind: TurnKind
-    route: TurnRoute
+    delivery: TurnDelivery
     original_user_text: str | None = None
     session: Session | None = None
 
@@ -155,8 +149,9 @@ class TurnContext:
     all_messages: list[dict[str, Any]] = field(default_factory=list)
     stop_reason: str = ""
     had_injections: bool = False
+    streamed_content: bool = False
 
-    user_persisted_early: bool = False
+    input_persisted_early: bool = False
     save_skip: int = 0
 
     outbound: OutboundMessage | None = None
@@ -165,6 +160,7 @@ class TurnContext:
     on_progress: Callable[..., Awaitable[None]] | None = None
     on_stream: Callable[[str], Awaitable[None]] | None = None
     on_stream_end: Callable[..., Awaitable[None]] | None = None
+    on_runtime_admitted: Callable[[LLMRuntime], Awaitable[None]] | None = None
     on_retry_wait: Callable[[str], Awaitable[None]] | None = None
 
     pending_queue: asyncio.Queue | None = None
@@ -292,9 +288,11 @@ class AgentLoop:
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
         provider_signature: tuple[object, ...] | None = None,
         model_presets: dict[str, ModelPresetConfig] | None = None,
+        preset_catalog_loader: preset_helpers.PresetCatalogLoader | None = None,
         model_preset: str | None = None,
         preset_snapshot_loader: preset_helpers.PresetSnapshotLoader | None = None,
         runtime_events: RuntimeEventBus | None = None,
+        turn_delivery_factory: TurnDeliveryFactory | None = None,
         runtime_model_publisher: Callable[[str, str | None], None] | None = None,
         restart_mode: str = "auto",
         local_trigger_store: Any | None = None,
@@ -304,8 +302,20 @@ class AgentLoop:
         _tc = tools_config or ToolsConfig()
         defaults = AgentDefaults()
         self.bus = bus
-        self.runtime_events = runtime_events or RuntimeEventBus()
-        self.runtime_event_publisher = RuntimeEventPublisher(self.runtime_events)
+        if turn_delivery_factory is not None:
+            if turn_delivery_factory.bus is not bus:
+                raise ValueError("turn delivery factory must use the agent message bus")
+            if (
+                runtime_events is not None
+                and turn_delivery_factory.runtime_events is not runtime_events
+            ):
+                raise ValueError("turn delivery factory must use the agent runtime event bus")
+            self.turn_delivery_factory = turn_delivery_factory
+            self.runtime_events = turn_delivery_factory.runtime_events
+        else:
+            self.runtime_events = runtime_events or RuntimeEventBus()
+            self.turn_delivery_factory = TurnDeliveryFactory(bus, self.runtime_events)
+        self.runtime_event_publisher = self.turn_delivery_factory.runtime_event_publisher
         self.channels_config = channels_config
         self.restart_mode = restart_mode
         self._runtime_model_publisher = runtime_model_publisher
@@ -328,6 +338,8 @@ class AgentLoop:
                 snapshot_signature=provider_signature,
             ),
             model_presets=configured_presets,
+            preset_catalog_loader=preset_catalog_loader,
+            configured_default_preset=model_preset,
             provider_snapshot_loader=provider_snapshot_loader,
             preset_snapshot_loader=preset_snapshot_loader,
         )
@@ -501,6 +513,47 @@ class AgentLoop:
         """Keep subagent runtime limits aligned with mutable loop settings."""
         self.subagents.max_iterations = self.max_iterations
 
+    def invalidate_runtime_config(self) -> None:
+        """Invalidate runtime config and notify clients to refresh its catalog."""
+        self.runtime_resolver.invalidate()
+        self._publish_runtime_selection(self.runtime_resolver.runtime)
+
+    def runtime_for_session(
+        self,
+        session: Session,
+        *,
+        recover_removed: bool = True,
+    ) -> LLMRuntime:
+        """Resolve the immutable runtime selected by one session."""
+        name = model_preset_from_metadata(session.metadata)
+        if name is None:
+            return self.llm_runtime()
+        try:
+            return self.runtime_resolver.resolve_preset(name)
+        except KeyError:
+            if not recover_removed or name in self.runtime_resolver.model_presets:
+                raise
+            logger.warning(
+                "Session '{}' references removed model preset '{}'; falling back to default",
+                session.key,
+                name,
+            )
+            session.metadata.pop(SESSION_MODEL_PRESET_METADATA_KEY, None)
+            self.sessions.save(session)
+            return self.llm_runtime()
+
+    def set_session_model_preset(
+        self,
+        session_key: str,
+        name: str,
+    ) -> LLMRuntime:
+        """Validate and persist one session's preset selection."""
+        runtime = self.runtime_resolver.resolve_preset(name)
+        session = self.sessions.get_or_create(session_key)
+        session.metadata[SESSION_MODEL_PRESET_METADATA_KEY] = runtime.model_preset
+        self.sessions.save(session)
+        return runtime
+
     def _publish_runtime_selection(
         self,
         runtime: LLMRuntime,
@@ -588,53 +641,6 @@ class AgentLoop:
         if provider not in self._runtime_context_providers:
             self._runtime_context_providers.append(provider)
 
-    @staticmethod
-    def _turn_route(msg: InboundMessage, session_key: str) -> TurnRoute:
-        """Resolve response routing without mixing it into execution metadata."""
-        if msg.channel != "system":
-            return TurnRoute(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                metadata=dict(msg.metadata or {}),
-            )
-
-        channel, chat_id = (
-            msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
-        )
-        metadata: dict[str, Any] = {}
-        if (
-            channel == "slack"
-            and session_key.startswith("slack:")
-            and session_key.count(":") >= 2
-        ):
-            metadata["slack"] = {"thread_ts": session_key.split(":", 2)[2]}
-        if origin_message_id := msg.metadata.get("origin_message_id"):
-            metadata["origin_message_id"] = origin_message_id
-        return TurnRoute(channel=channel, chat_id=chat_id, metadata=metadata)
-
-    async def _build_bus_progress_callback(
-        self, msg: InboundMessage
-    ) -> Callable[..., Awaitable[None]]:
-        """Build a progress callback that publishes to the message bus."""
-        return build_bus_progress_callback(self.bus, msg)
-
-    async def _build_retry_wait_callback(
-        self, msg: InboundMessage
-    ) -> Callable[[str], Awaitable[None]]:
-        """Build a retry-wait callback that publishes to the message bus."""
-
-        async def _on_retry_wait(content: str) -> None:
-            await self.bus.publish_outbound(
-                outbound_message_for_event(
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    event=RetryWaitEvent(content=content),
-                    metadata=msg.metadata,
-                )
-            )
-
-        return _on_retry_wait
-
     def _runtime_events(self) -> RuntimeEventPublisher:
         return ensure_runtime_event_publisher(self)
 
@@ -695,15 +701,16 @@ class AgentLoop:
     def _build_initial_messages(self, ctx: TurnContext) -> list[dict[str, Any]]:
         """Build the initial message list for the LLM turn."""
         assert ctx.session is not None
-        is_subagent = ctx.kind is TurnKind.SYSTEM and ctx.msg.sender_id == "subagent"
         scope = self.workspace_scopes.for_message(ctx.msg, ctx.session.metadata)
         return self.context.build_messages(
             history=ctx.history,
-            current_message="" if is_subagent else ctx.msg.content,
+            current_message=ctx.msg.content,
             media=ctx.msg.media if ctx.kind is TurnKind.USER and ctx.msg.media else None,
-            channel=ctx.route.channel,
-            chat_id=str(ctx.msg.metadata.get("context_chat_id") or ctx.route.chat_id),
-            current_role="assistant" if is_subagent else "user",
+            channel=ctx.delivery.route.channel,
+            chat_id=str(
+                ctx.msg.metadata.get("context_chat_id") or ctx.delivery.route.chat_id
+            ),
+            current_role="user",
             sender_id=ctx.msg.sender_id,
             session_summary=ctx.pending_summary,
             session_metadata=ctx.session.metadata,
@@ -717,13 +724,13 @@ class AgentLoop:
     def _request_context_for_turn(self, ctx: TurnContext) -> RequestContext:
         assert ctx.session is not None
         scope = self.workspace_scopes.for_turn(
-            channel=ctx.route.channel,
+            channel=ctx.delivery.route.channel,
             message_metadata=ctx.msg.metadata,
             session_metadata=ctx.session.metadata,
         )
         return RequestContext(
-            channel=ctx.route.channel,
-            chat_id=ctx.route.chat_id,
+            channel=ctx.delivery.route.channel,
+            chat_id=ctx.delivery.route.chat_id,
             message_id=ctx.msg.metadata.get("message_id"),
             session_key=ctx.session_key,
             original_user_text=ctx.original_user_text,
@@ -744,7 +751,9 @@ class AgentLoop:
             *self._runtime_context_providers,
         ]
         assert ctx.request_context is not None
-        return await resolve_runtime_context(providers, ctx.request_context)
+        blocks = runtime_context_blocks_from_metadata(ctx.request_context.metadata)
+        blocks.extend(await resolve_runtime_context(providers, ctx.request_context))
+        return blocks
 
     async def _dispatch_command_inline(
         self,
@@ -1024,7 +1033,7 @@ class AgentLoop:
                 except asyncio.TimeoutError:
                     self.auto_compact.check_expired(
                         self._schedule_background,
-                        self.llm_runtime,
+                        self.runtime_for_session,
                         active_session_keys=self._pending_queues.keys(),
                     )
                     continue
@@ -1120,6 +1129,7 @@ class AgentLoop:
         lock = self._session_locks.setdefault(session_key, asyncio.Lock())
         gate = self._concurrency_gate or nullcontext()
 
+        delivery = self.turn_delivery_factory.unrouted(msg, session_key)
         pending: asyncio.Queue | None = None
         try:
             async with lock, gate:
@@ -1128,66 +1138,23 @@ class AgentLoop:
                 pending = asyncio.Queue(maxsize=20)
                 self._pending_queues[session_key] = pending
                 try:
-                    on_stream = on_stream_end = None
-                    if msg.metadata.get("_wants_stream"):
-                        # Split one answer into distinct stream segments.
-                        stream_base_id = f"{msg.session_key}:{time.time_ns()}"
-                        stream_segment = 0
-
-                        def _current_stream_id() -> str:
-                            return f"{stream_base_id}:{stream_segment}"
-
-                        async def on_stream(delta: str) -> None:
-                            await self.bus.publish_outbound(
-                                outbound_message_for_event(
-                                    channel=msg.channel,
-                                    chat_id=msg.chat_id,
-                                    event=StreamDeltaEvent(
-                                        content=delta,
-                                        stream_id=_current_stream_id(),
-                                    ),
-                                    metadata=msg.metadata,
-                                )
-                            )
-
-                        async def on_stream_end(*, resuming: bool = False) -> None:
-                            nonlocal stream_segment
-                            await self.bus.publish_outbound(
-                                outbound_message_for_event(
-                                    channel=msg.channel,
-                                    chat_id=msg.chat_id,
-                                    event=StreamEndEvent(
-                                        stream_id=_current_stream_id(),
-                                        resuming=resuming,
-                                    ),
-                                    metadata=msg.metadata,
-                                )
-                            )
-                            stream_segment += 1
-
-                    response = await self._process_message(
-                        msg, on_stream=on_stream, on_stream_end=on_stream_end,
-                        pending_queue=pending,
+                    delivery = self.turn_delivery_factory.create(
+                        msg,
+                        session_key,
+                        enable_stream=True,
                     )
-                    completed_channel = msg.channel
-                    completed_chat_id = msg.chat_id
-                    if response is not None:
-                        await self.bus.publish_outbound(response)
-                        completed_channel = response.channel
-                        completed_chat_id = response.chat_id
-                    elif msg.channel == "cli":
-                        await self.bus.publish_outbound(OutboundMessage(
-                            channel=msg.channel, chat_id=msg.chat_id,
-                            content="", metadata=msg.metadata or {},
-                        ))
+                    response = await self._process_message(
+                        msg,
+                        on_stream=delivery.on_stream,
+                        on_stream_end=delivery.on_stream_end,
+                        pending_queue=pending,
+                        delivery=delivery,
+                    )
                     continuing = turn_continuation.internal_continuation_pending(msg.metadata)
-                    if not continuing:
-                        await self._runtime_events().turn_completed(
-                            channel=completed_channel,
-                            chat_id=completed_chat_id,
-                            session_key=session_key,
-                            metadata=msg.metadata,
-                        )
+                    await delivery.complete(
+                        response,
+                        publish_completion=not continuing,
+                    )
                     for _, coordinator in self._automation_turn_coordinators:
                         coordinator.complete(msg, response=response)
                 except asyncio.CancelledError:
@@ -1220,17 +1187,11 @@ class AgentLoop:
                     raise
                 except Exception as exc:
                     logger.exception("Error processing message for session {}", session_key)
-                    await self.bus.publish_outbound(OutboundMessage(
-                        channel=msg.channel, chat_id=msg.chat_id,
-                        content="Sorry, I encountered an error.",
-                    ))
-                    if not turn_continuation.internal_continuation_pending(msg.metadata):
-                        await self._runtime_events().turn_completed(
-                            channel=msg.channel,
-                            chat_id=msg.chat_id,
-                            session_key=session_key,
-                            metadata=msg.metadata,
+                    await delivery.fail(
+                        publish_completion=not turn_continuation.internal_continuation_pending(
+                            msg.metadata
                         )
+                    )
                     for _, coordinator in self._automation_turn_coordinators:
                         coordinator.complete(msg, error=exc)
                 finally:
@@ -1259,17 +1220,11 @@ class AgentLoop:
                                 leftover, session_key,
                             )
                     if not turn_continuation.internal_continuation_pending(msg.metadata):
-                        await self._runtime_events().run_status_changed(
-                            msg, session_key, "idle"
-                        )
-                        self._runtime_events().clear_turn(session_key)
+                        await delivery.idle()
                     await self._publish_next_deferred_automation_turn(session_key)
         finally:
             if pending is None:
-                await self._runtime_events().run_status_changed(
-                    msg, session_key, "idle"
-                )
-                self._runtime_events().clear_turn(session_key)
+                await delivery.idle()
                 await self._publish_next_deferred_automation_turn(session_key)
 
     async def close_mcp(self) -> None:
@@ -1318,11 +1273,10 @@ class AgentLoop:
         hook_factories: list[AgentTurnHookFactory] | None = None,
         tools: ToolRegistry | None = None,
         runtime: LLMRuntime | None = None,
+        delivery: TurnDelivery | None = None,
+        on_runtime_admitted: Callable[[LLMRuntime], Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
-        if runtime is None:
-            runtime = self.llm_runtime()
-
         kind = TurnKind.SYSTEM if msg.channel == "system" else TurnKind.USER
         if kind is TurnKind.SYSTEM:
             destination = (
@@ -1331,7 +1285,14 @@ class AgentLoop:
             key = session_key or msg.session_key_override or f"{destination[0]}:{destination[1]}"
         else:
             key = session_key or msg.session_key
-        route = self._turn_route(msg, key)
+        if delivery is None:
+            delivery = self.turn_delivery_factory.create(msg, key)
+        elif delivery.session_key != key:
+            raise ValueError("turn delivery session does not match the processing session")
+        if on_stream is None:
+            on_stream = delivery.on_stream
+        if on_stream_end is None:
+            on_stream_end = delivery.on_stream_end
         t0 = time.time()
         ctx = TurnContext(
             msg=msg,
@@ -1341,7 +1302,7 @@ class AgentLoop:
             turn_id=f"{key}:{time.time_ns()}",
             runtime=runtime,
             kind=kind,
-            route=route,
+            delivery=delivery,
             original_user_text=(
                 None
                 if kind is TurnKind.SYSTEM
@@ -1355,6 +1316,7 @@ class AgentLoop:
             on_progress=on_progress,
             on_stream=on_stream,
             on_stream_end=on_stream_end,
+            on_runtime_admitted=on_runtime_admitted,
             pending_queue=pending_queue,
             ephemeral=ephemeral,
             run_extra_hooks_for_ephemeral=run_extra_hooks_for_ephemeral,
@@ -1362,6 +1324,29 @@ class AgentLoop:
             hook_factories=list(hook_factories or []),
             tools=tools,
         )
+        # A streaming callback may be present even when the final text comes from a
+        # non-streaming recovery. Only the last completed segment can suppress the
+        # regular outbound message.
+        if ctx.on_stream is not None:
+            stream_callback = ctx.on_stream
+            stream_end_callback = ctx.on_stream_end
+            segment_streamed_content = False
+
+            async def _tracked_stream(delta: str) -> None:
+                nonlocal segment_streamed_content
+                if delta:
+                    segment_streamed_content = True
+                await stream_callback(delta)
+
+            async def _tracked_stream_end(*, resuming: bool = False) -> None:
+                nonlocal segment_streamed_content
+                ctx.streamed_content = segment_streamed_content
+                segment_streamed_content = False
+                if stream_end_callback is not None:
+                    await stream_end_callback(resuming=resuming)
+
+            ctx.on_stream = _tracked_stream
+            ctx.on_stream_end = _tracked_stream_end
 
         while ctx.state is not TurnState.DONE:
             handler_name = f"_state_{ctx.state.name.lower()}"
@@ -1424,7 +1409,7 @@ class AgentLoop:
         all_msgs: list[dict[str, Any]],
         stop_reason: str,
         had_injections: bool,
-        on_stream: Callable[[str], Awaitable[None]] | None,
+        streamed_content: bool,
         *,
         turn_latency_ms: int | None = None,
     ) -> OutboundMessage | None:
@@ -1439,7 +1424,7 @@ class AgentLoop:
 
         event = None
         meta = dict(msg.metadata or {})
-        if on_stream is not None and stop_reason not in {"error", "tool_error"}:
+        if streamed_content and stop_reason not in {"error", "tool_error"}:
             event = StreamedResponseEvent()
         if turn_latency_ms is not None:
             meta["latency_ms"] = int(turn_latency_ms)
@@ -1471,8 +1456,8 @@ class AgentLoop:
         # ensure it exists in case this handler is invoked independently.
         if ctx.session is None:
             ctx.session = self.sessions.get_or_create(ctx.session_key)
+        await ctx.delivery.started()
         if ctx.kind is TurnKind.USER:
-            await self._runtime_events().session_turn_started(msg, ctx.session_key)
             self.workspace_scopes.persist_message_scope(ctx.session, msg)
 
         if self._restore_runtime_checkpoint(ctx.session):
@@ -1527,7 +1512,7 @@ class AgentLoop:
             # them out of LLM context.  /new is excluded because it
             # intentionally clears the session.
             if cmd_ctx.raw.lower() != "/new":
-                ctx.user_persisted_early = self._persist_user_message_early(
+                ctx.input_persisted_early = self._persist_user_message_early(
                     ctx.msg, ctx.session, _command=True
                 )
                 ctx.session.add_message(
@@ -1539,19 +1524,22 @@ class AgentLoop:
         return "dispatch"
 
     async def _state_build(self, ctx: TurnContext) -> str:
+        runtime = ctx.runtime
+        if runtime is None:
+            runtime = self.runtime_for_session(ctx.session)
+            ctx.runtime = runtime
+        if ctx.on_runtime_admitted is not None:
+            await ctx.on_runtime_admitted(runtime)
         replay_max_messages = replay_max_messages_for_context(
-            ctx.runtime.context_window_tokens
+            runtime.context_window_tokens
         )
         if not ctx.ephemeral:
             await self.consolidator.maybe_consolidate_by_tokens(
                 ctx.session,
-                runtime=ctx.runtime,
+                runtime=runtime,
                 replay_max_messages=replay_max_messages,
             )
         is_subagent = ctx.kind is TurnKind.SYSTEM and ctx.msg.sender_id == "subagent"
-        if is_subagent and self._persist_subagent_followup(ctx.session, ctx.msg):
-            logger.debug("Subagent result persisted for session {}", ctx.session_key)
-            self.sessions.save(ctx.session)
 
         if ctx.kind is TurnKind.USER and (message_tool := self.tools.get("message")):
             if isinstance(message_tool, MessageTool):
@@ -1559,43 +1547,44 @@ class AgentLoop:
 
         _hist_kwargs: dict[str, Any] = {
             "max_messages": replay_max_messages,
-            "max_tokens": self._replay_token_budget(ctx.runtime),
+            "max_tokens": self._replay_token_budget(runtime),
             "extend_to_user": is_subagent,
         }
         ctx.history = ctx.session.get_history(**_hist_kwargs)
-        self._runtime_events().record_turn_runtime(
-            ctx.session_key,
-            ctx.runtime,
-        )
+        if is_subagent:
+            # Keep the durable internal delivery as an assistant record, but
+            # present this completion to the model as fresh follow-up input.
+            # Providers without assistant-prefill support drop trailing
+            # assistant messages, so using the persisted record as the current
+            # prompt would hide an independently dispatched subagent result.
+            if self._persist_subagent_followup(ctx.session, ctx.msg):
+                logger.debug("Subagent result persisted for session {}", ctx.session_key)
+                self.sessions.save(ctx.session)
+            ctx.input_persisted_early = True
+        ctx.delivery.record_runtime(ctx.runtime)
 
         ctx.request_context = self._request_context_for_turn(ctx)
         if ctx.kind is TurnKind.USER:
             ctx.runtime_context_blocks = await self._resolve_runtime_context_for_turn(ctx)
         ctx.initial_messages = self._build_initial_messages(ctx)
         if ctx.kind is TurnKind.USER:
-            ctx.user_persisted_early = self._persist_user_message_early(
+            ctx.input_persisted_early = self._persist_user_message_early(
                 ctx.msg,
                 ctx.session,
                 runtime_context_blocks=ctx.runtime_context_blocks,
             )
 
-            if ctx.on_progress is None:
-                ctx.on_progress = await self._build_bus_progress_callback(ctx.msg)
-            if ctx.on_retry_wait is None:
-                ctx.on_retry_wait = await self._build_retry_wait_callback(ctx.msg)
+        if ctx.on_progress is None:
+            ctx.on_progress = ctx.delivery.progress_callback()
+        if ctx.on_retry_wait is None:
+            ctx.on_retry_wait = ctx.delivery.retry_wait_callback()
 
         return "ok"
 
     async def _state_run(self, ctx: TurnContext) -> str:
         if ctx.visible_run_started_at is None:
             ctx.visible_run_started_at = time.time()
-        if ctx.kind is TurnKind.USER:
-            await self._runtime_events().run_status_changed(
-                ctx.msg,
-                ctx.session_key,
-                "running",
-                started_at=ctx.visible_run_started_at,
-            )
+        await ctx.delivery.running(started_at=ctx.visible_run_started_at)
         result = await self._run_agent_loop(
             ctx.initial_messages,
             runtime=ctx.runtime,
@@ -1604,8 +1593,8 @@ class AgentLoop:
             on_stream_end=ctx.on_stream_end,
             on_retry_wait=ctx.on_retry_wait,
             session=ctx.session,
-            channel=ctx.route.channel,
-            chat_id=ctx.route.chat_id,
+            channel=ctx.delivery.route.channel,
+            chat_id=ctx.delivery.route.chat_id,
             message_id=ctx.msg.metadata.get("message_id"),
             metadata=ctx.msg.metadata,
             session_key=ctx.session_key,
@@ -1653,10 +1642,7 @@ class AgentLoop:
             ctx.session, ctx.all_messages, ctx.save_skip,
             turn_latency_ms=ctx.turn_latency_ms,
         )
-        self._runtime_events().record_turn_latency(
-            ctx.session_key,
-            ctx.turn_latency_ms,
-        )
+        ctx.delivery.record_latency(ctx.turn_latency_ms)
         if not ctx.ephemeral:
             ctx.session.enforce_file_cap(
                 on_archive=partial(self.context.memory.raw_archive, session_key=ctx.session_key)
@@ -1680,11 +1666,11 @@ class AgentLoop:
             ctx.outbound = None
             return "ok"
         if ctx.kind is TurnKind.SYSTEM:
-            ctx.outbound = OutboundMessage(
-                channel=ctx.route.channel,
-                chat_id=ctx.route.chat_id,
-                content=ctx.final_content or "Background task completed.",
-                metadata=dict(ctx.route.metadata),
+            ctx.outbound = ctx.delivery.background_response(
+                ctx.final_content,
+                stop_reason=ctx.stop_reason,
+                streamed=ctx.streamed_content,
+                latency_ms=ctx.turn_latency_ms,
             )
             return "ok"
         ctx.outbound = self._assemble_outbound(
@@ -1693,7 +1679,7 @@ class AgentLoop:
             ctx.all_messages,
             ctx.stop_reason,
             ctx.had_injections,
-            ctx.on_stream,
+            ctx.streamed_content,
             turn_latency_ms=ctx.turn_latency_ms,
         )
         if ctx.ephemeral and ctx.outbound is not None:
@@ -1956,6 +1942,7 @@ class AgentLoop:
         tools: ToolRegistry | None = None,
         persist_user_message: bool = True,
         runtime: LLMRuntime | None = None,
+        on_runtime_admitted: Callable[[LLMRuntime], Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
         """Process an external message directly and return the outbound payload."""
         if channel == "system":
@@ -1989,6 +1976,8 @@ class AgentLoop:
                     kwargs["tools"] = tools
                 if runtime is not None:
                     kwargs["runtime"] = runtime
+                if on_runtime_admitted is not None:
+                    kwargs["on_runtime_admitted"] = on_runtime_admitted
                 return await self._process_message(
                     msg,
                     **kwargs,

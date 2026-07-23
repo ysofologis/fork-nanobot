@@ -81,10 +81,20 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     data = config.model_dump(mode="json", by_alias=True)
-    if config.providers.openai_codex.proxy is not None:
-        data.setdefault("providers", {})["openaiCodex"] = {
-            "proxy": config.providers.openai_codex.proxy,
-        }
+    # OAuth credentials live in dedicated token stores. Persist only the
+    # non-credential request settings consumed by these provider backends.
+    for alias, provider in (
+        ("openaiCodex", config.providers.openai_codex),
+        ("xaiGrok", config.providers.xai_grok),
+    ):
+        settings = provider.model_dump(
+            mode="json",
+            by_alias=True,
+            include={"proxy", "extra_body"},
+            exclude_none=True,
+        )
+        if settings:
+            data.setdefault("providers", {})[alias] = settings
 
     # Temp + replace so a crash mid-write cannot leave a truncated config.json.
     _write_text_atomic(path, json.dumps(data, indent=2, ensure_ascii=False))
@@ -199,8 +209,8 @@ def _migrate_config(data: dict) -> dict:
         defaults.pop("maxMessages", None)
         defaults.pop("max_messages", None)
         if had_legacy_max_messages:
-            # TODO(next version): Remove this legacy cleanup branch; the schema
-            # will silently ignore this field once the warning grace period ends.
+            # TODO(v0.2.4): Remove this legacy cleanup branch. v0.2.3 is the
+            # final release that warns before the schema silently ignores the field.
             logger.warning(
                 "agents.defaults.maxMessages/max_messages is legacy and ignored; "
                 "replay max messages is now an internal safety cap. Remove it from "
