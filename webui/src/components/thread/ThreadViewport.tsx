@@ -47,6 +47,8 @@ interface ThreadViewportProps {
   userMessageOffset?: number;
   onLoadOlder?: () => Promise<void> | void;
   onOpenFilePreview?: (path: string) => void;
+  onForkFromMessage?: (beforeUserIndex: number) => void;
+  onQuoteSelection?: (text: string) => void;
 }
 
 const NEAR_BOTTOM_PX = 48;
@@ -118,6 +120,8 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   userMessageOffset = 0,
   onLoadOlder,
   onOpenFilePreview,
+  onForkFromMessage,
+  onQuoteSelection,
 }, ref) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -531,7 +535,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
       const programmaticPromptTop = programmaticPromptScrollTopRef.current;
       const programmatic =
         programmaticPromptTop !== null && Math.abs(el.scrollTop - programmaticPromptTop) < 2;
-      setAtBottom(near);
+      setAtBottom((current) => current === near ? current : near);
       if (programmatic) {
         programmaticPromptScrollTopRef.current = null;
         if (near) userReadingHistoryRef.current = false;
@@ -579,6 +583,8 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
                   slashCommands={slashCommands}
                   forkBoundaryMessageCount={visibleForkBoundaryMessageCount}
                   onOpenFilePreview={onOpenFilePreview}
+                  onForkFromMessage={onForkFromMessage}
+                  onQuoteSelection={onQuoteSelection}
                 />
               </div>
             </div>
@@ -600,7 +606,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
                 data-testid="thread-welcome-layout"
                 className="relative grid w-full max-w-[58rem] flex-1 grid-rows-[minmax(min-content,1fr)_auto] gap-8 sm:block sm:flex-none"
               >
-                <div className="flex min-h-0 items-center justify-center sm:absolute sm:inset-x-0 sm:bottom-[calc(100%+2rem)]">
+                <div className="flex min-h-0 min-w-0 w-full items-center justify-center sm:absolute sm:inset-x-0 sm:bottom-[calc(100%+2rem)]">
                   {emptyState}
                 </div>
                 <div className="w-full">{composer}</div>
