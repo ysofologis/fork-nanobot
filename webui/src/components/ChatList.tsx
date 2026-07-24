@@ -23,7 +23,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { deriveTitle, relativeTime } from "@/lib/format";
+import { deriveTitle, relativeTime, visibleSessionPreview } from "@/lib/format";
 import {
   COLLAPSED_CHATS_VISIBLE_COUNT,
   displayTitle,
@@ -237,7 +237,7 @@ export const ChatList = memo(function ChatList({
                       deriveTitle(s.preview, fallbackTitle);
                     const isPinned = pinned.has(s.key);
                     const isArchived = archived.has(s.key);
-                    const preview = s.preview.trim();
+                    const preview = visibleSessionPreview(s.preview);
                     const showPreview = showPreviews && preview && preview !== title;
                     const timestamp = showTimestamps
                       ? relativeTime(s.updatedAt ?? s.createdAt)
@@ -516,7 +516,7 @@ function ChatsFoldFooter({
   const { t, i18n } = useTranslation();
   const collapsedFallback = i18n.resolvedLanguage?.startsWith("zh")
     ? `已折叠 ${hiddenCount} 个对话`
-    : `${hiddenCount} hidden chats`;
+    : `${hiddenCount} hidden topics`;
 
   return (
     <div className="px-2 pb-1 pt-1">
