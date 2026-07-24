@@ -61,6 +61,10 @@ import {
   WorkspaceProjectPicker,
 } from "@/components/thread/WorkspaceControls";
 import {
+  ModelPresetBadge,
+  type ModelPresetOption,
+} from "@/components/thread/ModelPresetBadge";
+import {
   ACCEPT_ATTR,
   MAX_ATTACHMENTS_PER_MESSAGE,
   useAttachedImages,
@@ -87,14 +91,13 @@ import type {
   WorkspacesPayload,
 } from "@/lib/types";
 import {
-  inferProviderFromModelName,
   logoFallbackUrls,
-  providerBrand,
 } from "@/lib/provider-brand";
 import {
   isSideChannelLifecycle,
   slashCommandLifecycle,
 } from "@/lib/slash-command";
+import { formatQuotedUserMessage } from "@/lib/user-message-quote";
 import { cn } from "@/lib/utils";
 
 const VOICE_SHORTCUT_CODE = "KeyD";
@@ -167,6 +170,10 @@ interface ThreadComposerProps {
   placeholder?: string;
   isStreaming?: boolean;
   modelLabel?: string | null;
+  modelDetail?: string | null;
+  modelPreset?: string | null;
+  modelPresets?: ModelPresetOption[];
+  onModelPresetChange?: (name: string) => void;
   modelProvider?: string | null;
   modelProviderLabel?: string | null;
   modelNeedsSetup?: boolean;
@@ -813,6 +820,10 @@ export function ThreadComposer({
   placeholder,
   isStreaming = false,
   modelLabel = null,
+  modelDetail = null,
+  modelPreset = null,
+  modelPresets = [],
+  onModelPresetChange,
   modelProvider = null,
   modelProviderLabel = null,
   modelNeedsSetup = false,
@@ -1466,7 +1477,7 @@ export function ThreadComposer({
   const queueGuidancePrompt = useCallback(() => {
     const text = value.trim();
     if (!canQueueGuidance || (!text && readyImages.length === 0)) return;
-    if (utf8Bytes(text) > maxTextBytes) {
+    if (utf8Bytes(formatQuotedUserMessage(text, normalizedQuotedContext)) > maxTextBytes) {
       setInlineError(textTooLargeMessage());
       return;
     }
@@ -1608,7 +1619,7 @@ export function ThreadComposer({
     if (!canSend) return;
     const trimmed = value.trim();
     const content = trimmed;
-    if (utf8Bytes(content) > maxTextBytes) {
+    if (utf8Bytes(formatQuotedUserMessage(content, normalizedQuotedContext)) > maxTextBytes) {
       setInlineError(textTooLargeMessage());
       return;
     }
@@ -2083,8 +2094,12 @@ export function ThreadComposer({
             )}
           >
             {modelLabel && !voiceRecorder.isRecording ? (
-              <ComposerModelBadge
+              <ModelPresetBadge
                 label={modelLabel}
+                modelDetail={modelDetail}
+                modelPreset={modelPreset}
+                modelPresets={modelPresets}
+                onPresetChange={onModelPresetChange}
                 provider={modelProvider}
                 providerLabel={modelProviderLabel}
                 needsSetup={modelNeedsSetup}
@@ -2369,94 +2384,6 @@ function QueuedPromptRow({
         <Trash2 className="h-3 w-3" aria-hidden />
       </Button>
     </div>
-  );
-}
-
-function ComposerModelBadge({
-  label,
-  provider,
-  providerLabel,
-  needsSetup,
-  fallbackModelName,
-  isHero,
-  onClick,
-}: {
-  label: string;
-  provider?: string | null;
-  providerLabel?: string | null;
-  needsSetup?: boolean;
-  fallbackModelName?: string | null;
-  isHero: boolean;
-  onClick?: () => void;
-}) {
-  const inferredProvider = needsSetup ? null : provider || inferProviderFromModelName(label);
-  const brand = providerBrand(inferredProvider);
-  const { logoUrl, onLogoError, onLogoLoad } = useLogoFallback(brand?.logoUrls);
-  const showLogo = !!logoUrl;
-  const title = providerLabel ? `${label} · ${providerLabel}` : label;
-  const interactive = Boolean(onClick);
-  const Container = interactive ? "button" : "span";
-
-  return (
-    <Container
-      data-fallback={fallbackModelName ? "true" : undefined}
-      title={fallbackModelName || title}
-      aria-label={label}
-      type={interactive ? "button" : undefined}
-      onClick={onClick}
-      className={cn(
-        "composer-model-badge thread-composer-model-badge inline-flex min-w-0 items-center rounded-full border border-border/55 bg-card font-medium text-foreground/82",
-        "shadow-[0_2px_8px_rgba(15,23,42,0.045)]",
-        interactive && "cursor-pointer hover:bg-accent/55 hover:text-foreground",
-        needsSetup && "border-amber-500/35 bg-amber-50/70 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200",
-        isHero
-          ? "h-8 max-w-[min(12.5rem,44vw)] gap-1.5 px-2 text-[11.5px]"
-          : "h-9 max-w-[min(12rem,44vw)] gap-2 px-2.5 text-[12px]",
-      )}
-    >
-      <span
-        data-testid={needsSetup ? "composer-model-setup-icon" : inferredProvider ? `composer-model-logo-${inferredProvider}` : "composer-model-logo"}
-        className={cn(
-          "grid shrink-0 place-items-center overflow-hidden",
-          needsSetup
-            ? "text-amber-800 dark:text-amber-200"
-            : "rounded-full border bg-background",
-          isHero ? "h-[18px] w-[18px]" : "h-5 w-5",
-        )}
-        style={{
-          borderColor: !needsSetup && brand ? `${brand.color}28` : undefined,
-          boxShadow: !needsSetup && brand ? `inset 0 0 0 1px ${brand.color}18` : undefined,
-        }}
-        aria-hidden
-      >
-        {needsSetup ? (
-          <CircleHelp className={cn(isHero ? "h-3 w-3" : "h-3.5 w-3.5")} strokeWidth={1.8} />
-        ) : showLogo ? (
-          <img
-            src={logoUrl}
-            alt=""
-            decoding="async"
-            loading="lazy"
-            className={cn("object-contain", isHero ? "h-3 w-3" : "h-3.5 w-3.5")}
-            onLoad={onLogoLoad}
-            onError={onLogoError}
-          />
-        ) : brand ? (
-          <span
-            className={cn(
-              "grid h-full w-full place-items-center rounded-full text-white",
-              isHero ? "text-[7.5px]" : "text-[8px]",
-            )}
-            style={{ backgroundColor: brand.color }}
-          >
-            {brand.initials.slice(0, 2)}
-          </span>
-        ) : (
-          <Sparkles className={cn("text-muted-foreground/65", isHero ? "h-3 w-3" : "h-3 w-3")} />
-        )}
-      </span>
-      <span className="thread-composer-model-label truncate">{label}</span>
-    </Container>
   );
 }
 
