@@ -60,5 +60,8 @@
     "typescript-eslint": "^8.59.4",
     "vite": "^5.4.11",
     "vitest": "^2.1.8"
+  },
+  "allowScripts": {
+    "esbuild": true
   }
 }

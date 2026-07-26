@@ -1,9 +1,9 @@
-import { Suspense, lazy, useCallback, useState, type ReactNode } from "react";
+import { Suspense, lazy, useCallback, useMemo, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { useThemeValue } from "@/hooks/useTheme";
-import { hasAnsi, parseAnsiSegments, stripAnsi } from "@/lib/ansi";
+import { hasAnsi, parseAnsiSegments, stripAnsi, type AnsiSegment } from "@/lib/ansi";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeCodeLanguage } from "@/lib/code-language";
 import { cn } from "@/lib/utils";
@@ -115,10 +115,12 @@ function PlainCodeFallback({
   code,
   chrome,
   showLineNumbers,
+  className,
 }: {
   code: string;
   chrome: "default" | "none";
   showLineNumbers: boolean;
+  className?: string;
 }) {
   const lines = code.split("\n");
   return (
@@ -153,6 +155,83 @@ function PlainCodeFallback({
 function shouldRenderAnsi(language: string | undefined, code: string): boolean {
   const normalized = language?.trim().toLowerCase();
   return Boolean((normalized && ANSI_LANGUAGES.has(normalized)) || hasAnsi(code));
+}
+
+function renderAnsiText(segments: AnsiSegment[]): React.ReactNode {
+  return segments.map((segment, index) => (
+    <span key={index} style={segment.style}>
+      {segment.text}
+    </span>
+  ));
+}
+
+function CodeTextBlock({
+  code,
+  chrome,
+  showLineNumbers,
+  testId,
+}: {
+  code: string;
+  chrome: "default" | "none";
+  showLineNumbers: boolean;
+  testId?: string;
+}) {
+  const segments = useMemo(() => parseAnsiSegments(code), [code]);
+  const lines = useMemo(() => {
+    const result: React.ReactNode[] = [];
+    let currentLine: (AnsiSegment & { segIdx: number })[] = [];
+    let segIdx = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      const parts = seg.text.split(/(\n)/);
+      for (let j = 0; j < parts.length; j++) {
+        const part = parts[j];
+        if (part === "\n") {
+          result.push(
+            <span key={`l-${result.length}`} className="flex min-w-max">
+              {showLineNumbers ? (
+                <span className="w-10 shrink-0 select-none pr-4 text-right text-muted-foreground/60">
+                  {result.length + 1}
+                </span>
+              ) : null}
+              <span className="whitespace-pre">{renderAnsiText(currentLine.map((s) => ({ text: s.text, style: s.style })))}</span>
+              {"\n"}
+            </span>,
+          );
+          currentLine = [];
+        } else if (part) {
+          currentLine.push({ text: part, style: seg.style, segIdx: segIdx++ });
+        }
+      }
+    }
+    if (currentLine.length > 0 || code.endsWith("\n") === false) {
+      result.push(
+        <span key={`l-${result.length}`} className="flex min-w-max">
+          {showLineNumbers ? (
+            <span className="w-10 shrink-0 select-none pr-4 text-right text-muted-foreground/60">
+              {result.length + 1}
+            </span>
+          ) : null}
+          <span className="whitespace-pre">{renderAnsiText(currentLine.map((s) => ({ text: s.text, style: s.style })))}</span>
+        </span>,
+      );
+    }
+    return result;
+  }, [segments, showLineNumbers, code]);
+
+  return (
+    <pre
+      className={cn(
+        "m-0 overflow-x-auto bg-transparent font-mono text-[13px]",
+        chrome === "default"
+          ? "py-4 pl-5 pr-14 leading-[1.6]"
+          : "p-3 leading-[1.55]",
+      )}
+      data-testid={testId}
+    >
+      <code className="text-inherit">{lines}</code>
+    </pre>
+  );
 }
 
 export function CodeBlock({
@@ -195,7 +274,6 @@ export function CodeBlock({
           chrome={chrome}
           showLineNumbers={showLineNumbers}
           testId="ansi-code"
-          renderText={renderAnsiText}
         />
       ) : highlight ? (
         <Suspense

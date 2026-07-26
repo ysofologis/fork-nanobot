@@ -181,6 +181,7 @@ import type {
   SessionAutomationJob,
   SettingsPayload,
   SkillSummary,
+  TranscriptionSettingsUpdate,
   WebSearchSettingsUpdate,
   WebuiDefaultAccessMode,
 } from "@/lib/types";
@@ -493,6 +494,26 @@ const DEFAULT_IMAGE_GENERATION_FORM: ImageGenerationSettingsUpdate = {
   maxImagesPerTurn: 4,
 };
 
+const DEFAULT_TRANSCRIPTION_SETTINGS: TranscriptionSettingsUpdate = {
+  enabled: false,
+  provider: "",
+  model: "",
+  language: "",
+  maxDurationSec: 60,
+  maxUploadMb: 25,
+};
+
+const EMPTY_TRANSCRIPTION_PAYLOAD: NonNullable<SettingsPayload["transcription"]> = {
+  enabled: false,
+  provider: "",
+  provider_configured: false,
+  model: "",
+  language: null,
+  max_duration_sec: 60,
+  max_upload_mb: 25,
+  providers: [],
+};
+
 const DEFAULT_NETWORK_SAFETY_FORM: NetworkSafetySettingsUpdate = {
   webuiAllowLocalServiceAccess: true,
   webuiDefaultAccessMode: "default",
@@ -557,6 +578,17 @@ function imageGenerationFormFromPayload(payload: SettingsPayload): ImageGenerati
     defaultAspectRatio: payload.image_generation.default_aspect_ratio,
     defaultImageSize: payload.image_generation.default_image_size,
     maxImagesPerTurn: payload.image_generation.max_images_per_turn,
+  };
+}
+
+function transcriptionFormFromPayload(payload: SettingsPayload): TranscriptionSettingsUpdate {
+  return {
+    enabled: payload.transcription?.enabled ?? false,
+    provider: payload.transcription?.provider ?? "",
+    model: payload.transcription?.model ?? "",
+    language: payload.transcription?.language ?? "",
+    maxDurationSec: payload.transcription?.max_duration_sec ?? 60,
+    maxUploadMb: payload.transcription?.max_upload_mb ?? 25,
   };
 }
 
@@ -681,6 +713,12 @@ export function SettingsView({
       initialSettings
         ? imageGenerationFormFromPayload(initialSettings)
         : DEFAULT_IMAGE_GENERATION_FORM,
+  );
+  const [transcriptionForm, setTranscriptionForm] = useState<TranscriptionSettingsUpdate>(
+    () =>
+      initialSettings
+        ? transcriptionFormFromPayload(initialSettings)
+        : DEFAULT_TRANSCRIPTION_SETTINGS,
   );
   const [networkSafetyForm, setNetworkSafetyForm] = useState<NetworkSafetySettingsUpdate>(() =>
     initialSettings ? networkSafetyFormFromPayload(initialSettings) : DEFAULT_NETWORK_SAFETY_FORM,
@@ -1035,14 +1073,14 @@ export function SettingsView({
 
   const transcriptionDirty = useMemo(() => {
     if (!settings) return false;
-    const transcription = settings.transcription ?? DEFAULT_TRANSCRIPTION_SETTINGS;
+    const payload = settings.transcription ?? EMPTY_TRANSCRIPTION_PAYLOAD;
     return (
-      transcriptionForm.enabled !== transcription.enabled ||
-      transcriptionForm.provider !== transcription.provider ||
-      transcriptionForm.model !== transcription.model ||
-      transcriptionForm.language !== (transcription.language ?? "") ||
-      transcriptionForm.maxDurationSec !== transcription.max_duration_sec ||
-      transcriptionForm.maxUploadMb !== transcription.max_upload_mb
+      transcriptionForm.enabled !== payload.enabled ||
+      transcriptionForm.provider !== payload.provider ||
+      transcriptionForm.model !== payload.model ||
+      transcriptionForm.language !== (payload.language ?? "") ||
+      transcriptionForm.maxDurationSec !== payload.max_duration_sec ||
+      transcriptionForm.maxUploadMb !== payload.max_upload_mb
     );
   }, [settings, transcriptionForm]);
 
@@ -2584,6 +2622,15 @@ function OverviewSettings({
       ? tx("settings.values.configured", "Configured")
       : tx("settings.values.notConfigured", "Not configured")
   }`;
+  const transcription = settings.transcription ?? EMPTY_TRANSCRIPTION_PAYLOAD;
+  const voiceStatus = transcription.enabled
+    ? tx("settings.values.enabled", "Enabled")
+    : tx("settings.values.disabled", "Disabled");
+  const voiceCaption = `${providerDisplayLabel(transcription.providers, transcription.provider)} · ${
+    transcription.provider_configured
+      ? tx("settings.values.configured", "Configured")
+      : tx("settings.values.notConfigured", "Not configured")
+  }`;
   const isNativeHost = (settings.surface ?? settings.runtime_surface) === "native";
   const workspaceCaption = shortWorkspacePath(settings.runtime.workspace_path);
   const runtimeTitle = isNativeHost
@@ -2600,7 +2647,7 @@ function OverviewSettings({
   return (
     <div className="space-y-7">
       <section className="rounded-[22px] bg-settings-surface px-4 py-4 sm:px-5">
-        <TokenUsageHeatmap usage={settings.usage} timeZone={settings.agent.timezone} />
+        <TokenUsageHeatmap usage={settings.usage} />
       </section>
 
       <section>
@@ -4848,7 +4895,7 @@ function TranscriptionSettings({
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
-  const transcription = settings.transcription ?? DEFAULT_TRANSCRIPTION_SETTINGS;
+  const transcription = settings.transcription ?? EMPTY_TRANSCRIPTION_PAYLOAD;
   const selectedProvider =
     transcription.providers.find((provider) => provider.name === form.provider) ??
     transcription.providers[0];
