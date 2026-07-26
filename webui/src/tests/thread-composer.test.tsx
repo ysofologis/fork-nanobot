@@ -406,6 +406,34 @@ describe("ThreadComposer", () => {
     expect(input.parentElement?.parentElement?.className).toContain("max-w-[58rem]");
   });
 
+  it("lets long model preset labels use their intrinsic width", () => {
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        modelLabel="gpt-5.6-sol"
+        modelPreset="gpt-5-6-sol"
+        modelProvider="openai_codex"
+        modelPresets={[
+          {
+            name: "gpt-5-6-sol",
+            label: "gpt-5.6-sol",
+            model: "openai-codex/gpt-5.6-sol",
+            provider: "openai_codex",
+          },
+          ...MODEL_PRESETS,
+        ]}
+        onModelPresetChange={vi.fn()}
+        placeholder="Ask anything..."
+        variant="hero"
+      />,
+    );
+
+    const badge = screen.getByRole("spinbutton", { name: "gpt-5.6-sol" });
+    expect(badge).toHaveClass("w-fit", "max-w-[min(18rem,44vw)]");
+    expect(badge).not.toHaveClass("w-[5.75rem]");
+    expect(screen.getByText("gpt-5.6-sol")).toBeInTheDocument();
+  });
+
   it("keeps the thread composer compact while matching the hero style", () => {
     render(
       <ThreadComposer
@@ -451,9 +479,16 @@ describe("ThreadComposer", () => {
     longPress(badge);
     expect(badge).toHaveAttribute("data-switching", "true");
     const viewport = screen.getByTestId("composer-model-pill-viewport");
-    expect(viewport).toHaveClass("overflow-hidden", "-left-2", "-top-3", "-bottom-3");
+    expect(viewport).toHaveClass(
+      "right-0",
+      "w-max",
+      "max-w-[calc(44vw+0.5rem)]",
+      "overflow-hidden",
+      "-top-3",
+      "-bottom-3",
+    );
     const track = screen.getByTestId("composer-model-pill-track");
-    expect(track).toHaveClass("items-end", "gap-1");
+    expect(track).toHaveClass("w-max", "max-w-full", "items-end", "gap-1");
     const activeTouchMove = new Event("touchmove", {
       bubbles: true,
       cancelable: true,
@@ -1038,11 +1073,57 @@ describe("ThreadComposer", () => {
     const status = screen.getByRole("status");
     expect(status).toHaveTextContent(/Running/);
     expect(status).toHaveTextContent(/2:05/);
-    expect(status.parentElement).toHaveClass("composer-status-strip");
-    expect(status.parentElement).toHaveAttribute("data-state", "enter");
+    expect(status).toHaveClass("composer-status-drawer-content");
+    expect(status.closest("[data-composer-status-drawer]")).toHaveAttribute(
+      "data-state",
+      "open",
+    );
     expect(status.querySelector(".run-pulse-icon")).not.toBeNull();
 
     vi.useRealTimers();
+  });
+
+  it("opens and closes the run timer through one persistent drawer", () => {
+    const { container, rerender } = render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        placeholder="Type your message..."
+        runStartedAt={null}
+      />,
+    );
+
+    const drawer = container.querySelector("[data-composer-status-drawer]");
+    expect(drawer).not.toBeNull();
+    expect(drawer).toHaveAttribute("data-state", "closed");
+    expect(drawer).toHaveAttribute("aria-hidden", "true");
+
+    rerender(
+      <ThreadComposer
+        onSend={vi.fn()}
+        placeholder="Type your message..."
+        runStartedAt={Math.floor(Date.now() / 1000)}
+      />,
+    );
+
+    expect(container.querySelector("[data-composer-status-drawer]")).toBe(drawer);
+    expect(drawer).toHaveAttribute("data-state", "open");
+    expect(drawer).not.toHaveAttribute("aria-hidden");
+    const status = screen.getByRole("status");
+    expect(status).toHaveClass("composer-status-drawer-content");
+
+    rerender(
+      <ThreadComposer
+        onSend={vi.fn()}
+        placeholder="Type your message..."
+        runStartedAt={null}
+      />,
+    );
+
+    expect(container.querySelector("[data-composer-status-drawer]")).toBe(drawer);
+    expect(drawer).toHaveAttribute("data-state", "closed");
+    expect(drawer).toHaveAttribute("aria-hidden", "true");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(drawer?.querySelector('[role="status"]')).toBe(status);
   });
 
   it("opens an upward anchored goal panel with markdown content when expand is clicked", async () => {

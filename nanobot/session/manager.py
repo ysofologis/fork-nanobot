@@ -138,6 +138,8 @@ class Session:
     last_consolidated: int = 0  # Number of messages already consolidated to files
 
     def __post_init__(self) -> None:
+        if not isinstance(self.metadata, dict):
+            self.metadata = {}
         # An out-of-range offset (corrupt metadata) would hide all history; reset it.
         if (
             isinstance(self.last_consolidated, bool)
@@ -513,7 +515,7 @@ class SessionManager:
         if path.exists():
             return path
 
-        # TODO(v0.2.4): Remove both legacy fallbacks. v0.2.3 is the final
+        # TODO(v0.3.1): Remove both legacy fallbacks. v0.3.0 is the final
         # compatibility window for reading and lazily migrating legacy session files.
         fallback_paths = [
             (self._get_legacy_lossy_path(key), "legacy lossy path"),
