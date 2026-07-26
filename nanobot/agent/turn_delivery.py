@@ -226,18 +226,8 @@ class TurnDelivery:
         completed_channel = self.lifecycle_message.channel
         completed_chat_id = self.lifecycle_message.chat_id
         if response is not None:
-            await self.bus.publish_outbound(response)
             completed_channel = response.channel
             completed_chat_id = response.chat_id
-        elif self.lifecycle_message.channel == "cli":
-            await self.bus.publish_outbound(
-                OutboundMessage(
-                    channel=self.lifecycle_message.channel,
-                    chat_id=self.lifecycle_message.chat_id,
-                    content="",
-                    metadata=dict(self.lifecycle_message.metadata or {}),
-                )
-            )
         if publish_completion:
             await self.runtime_event_publisher.turn_completed(
                 channel=completed_channel,
