@@ -81,6 +81,11 @@ class ContextBuilder:
         root = workspace or self.workspace
         parts = [self._get_identity(channel=channel, workspace=root)]
 
+        # Channel-specific prompt loaded before AGENTS.md et al.
+        channel_prompt = self._load_channel_prompt(channel, root)
+        if channel_prompt:
+            parts.append(channel_prompt)
+
         bootstrap = self._load_bootstrap_files(root)
         if bootstrap:
             parts.append(bootstrap)
@@ -183,6 +188,23 @@ class ContextBuilder:
                 parts.append(f"## {filename}\n\n{content}")
 
         return "\n\n".join(parts) if parts else ""
+
+    @staticmethod
+    def _load_channel_prompt(channel: str | None, workspace: Path) -> str:
+        """Load the channel-specific system prompt if it exists.
+
+        Looks for ``{workspace}/prompts/system_prompts/channel_{channel}.md``
+        and returns its content wrapped in a section header, or an empty string
+        if the file does not exist or is blank.
+        """
+        if not channel:
+            return ""
+        prompt_path = workspace / "prompts" / "system_prompts" / f"channel_{channel}.md"
+        if prompt_path.is_file():
+            content = prompt_path.read_text(encoding="utf-8").strip()
+            if content:
+                return f"## Channel Prompt ({channel})\n\n{content}"
+        return ""
 
     @staticmethod
     def _is_template_content(content: str, template_path: str) -> bool:

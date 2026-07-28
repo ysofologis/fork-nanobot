@@ -335,7 +335,7 @@ def _command_error_message(exc: Exception) -> str:
     return str(exc.args[0]) if isinstance(exc, KeyError) and exc.args else str(exc)
 
 
-def _model_command_status(loop, session) -> str:
+def _model_command_status(loop, session, *, session_key: str | None = None) -> str:
     names = _model_preset_names(loop)
     try:
         runtime = loop.runtime_for_session(session, recover_removed=False)
@@ -347,12 +347,16 @@ def _model_command_status(loop, session) -> str:
             "- Switch with `/model <preset>`.",
         ])
     active = runtime.model_preset or "default"
-    return "\n".join([
+    lines = [
         "## Model",
         f"- Current model: `{runtime.model}`",
         f"- Current preset: `{active}`",
-        f"- Available presets: {_format_preset_names(names)}",
-    ])
+    ]
+    if session_key and ":" in session_key:
+        channel_name = session_key.split(":", 1)[0]
+        lines.insert(1, f"- Channel: `{channel_name}`")
+    lines.append(f"- Available presets: {_format_preset_names(names)}")
+    return "\n".join(lines)
 
 
 async def cmd_model(ctx: CommandContext) -> OutboundMessage:
@@ -366,7 +370,7 @@ async def cmd_model(ctx: CommandContext) -> OutboundMessage:
         return OutboundMessage(
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
-            content=_model_command_status(loop, session),
+            content=_model_command_status(loop, session, session_key=ctx.key),
             metadata=metadata,
         )
 
