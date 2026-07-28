@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from nanobot import __version__
 from nanobot.bus.events import INBOUND_META_USER_SHELL, OutboundMessage
 from nanobot.command.router import CommandContext, CommandRouter, normalize_command_text
+from nanobot.session.pack import parse_session_key
 from nanobot.utils.helpers import build_status_content
 from nanobot.utils.restart import set_restart_notice_to_env
 from nanobot.utils.workspace_prompts import initialize_workspace_prompt
@@ -171,6 +172,28 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "circle-help",
     ),
     BuiltinCommandSpec(
+        "/pack",
+        "Session pack",
+        "Create or switch to a topic-based session pack.",
+        "package",
+        "<topic>",
+        accepts_args=True,
+    ),
+    BuiltinCommandSpec(
+        "/pack-list",
+        "List packs",
+        "List all session packs.",
+        "list",
+    ),
+    BuiltinCommandSpec(
+        "/pack-search",
+        "Search packs",
+        "Search across all session packs.",
+        "search",
+        "<query>",
+        accepts_args=True,
+    ),
+    BuiltinCommandSpec(
         "/pairing",
         "Manage pairing",
         "List, approve, deny or revoke pairing requests.",
@@ -283,19 +306,58 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
     task_count = sum(1 for t in active_tasks if not t.done())
     with suppress(Exception):
         task_count += loop.subagents.get_running_count_by_session(ctx.key)
+
+    # Check for session pack info
+    pack_section = ""
+    with suppress(Exception):
+        pack_key = parse_session_key(ctx.key)
+        if pack_key.index:
+            from pathlib import Path
+            workspace: Path | None = getattr(loop, "workspace", None)
+            if workspace is None:
+                context = getattr(loop, "context", None)
+                workspace = getattr(context, "workspace", None) if context else None
+            if workspace is not None:
+                from nanobot.session.pack_manager import PackManager
+                pm = PackManager(workspace)
+                meta = pm.get_pack(pack_key.session_name)
+                if meta:
+                    session_count = meta.get("session_count", 0)
+                    status = meta.get("status", "active")
+                    pack_section = (
+                        "\n📦 Session Pack"
+                        f"\n  • Key:        `{ctx.key}`"
+                        f"\n  • Channel:    `{pack_key.channel or '(none)'}`"
+                        f"\n  • Topic:      `{pack_key.session_name}`"
+                        f"\n  • Package #:  {pack_key.index}"
+                        f"\n  • Sessions:   {session_count} in pack ({status})"
+                    )
+                else:
+                    pack_section = (
+                        "\n📦 Session Pack"
+                        f"\n  • Key:        `{ctx.key}`"
+                        f"\n  • Channel:    `{pack_key.channel or '(none)'}`"
+                        f"\n  • Topic:      `{pack_key.session_name}`"
+                        f"\n  • Package #:  {pack_key.index}"
+                    )
+
+    status_content = build_status_content(
+        version=__version__, model=runtime.model,
+        start_time=loop._start_time, last_usage=loop._last_usage,
+        context_window_tokens=runtime.context_window_tokens,
+        session_msg_count=len(session.get_history(max_messages=0)),
+        context_tokens_estimate=ctx_est,
+        search_usage_text=search_usage_text,
+        active_task_count=task_count,
+        max_completion_tokens=runtime.generation.max_tokens,
+    )
+    if pack_section:
+        status_content += pack_section
+
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
-        content=build_status_content(
-            version=__version__, model=runtime.model,
-            start_time=loop._start_time, last_usage=loop._last_usage,  # pyright: ignore[reportPrivateUsage]
-            context_window_tokens=runtime.context_window_tokens,
-            session_msg_count=len(session.get_history(max_messages=0)),
-            context_tokens_estimate=ctx_est,
-            search_usage_text=search_usage_text,
-            active_task_count=task_count,
-            max_completion_tokens=runtime.generation.max_tokens,
-        ),
+        content=status_content,
         metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
     )
 
@@ -1070,3 +1132,10 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.prefix("/pairing ", cmd_pairing)
     router.exact(USER_SHELL_COMMAND, cmd_user_shell)
     router.prefix(f"{USER_SHELL_COMMAND} ", cmd_user_shell)
+    # Session pack commands (lazy import to avoid circular dependencies)
+    from nanobot.command.pack_cmds import cmd_pack, cmd_pack_list, cmd_pack_search
+    router.exact("/pack", cmd_pack)
+    router.prefix("/pack ", cmd_pack)
+    router.exact("/pack-list", cmd_pack_list)
+    router.exact("/pack-search", cmd_pack_search)
+    router.prefix("/pack-search ", cmd_pack_search)
