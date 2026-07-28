@@ -14,7 +14,7 @@ from typing import Literal
 from nanobot import __version__
 from nanobot.agent.goal_permission import goal_mutation_permission
 from nanobot.bus.events import OutboundMessage
-from nanobot.command.router import CommandContext, CommandRouter
+from nanobot.command.router import CommandContext, CommandRouter, normalize_command_text
 from nanobot.utils.helpers import build_status_content
 from nanobot.utils.restart import set_restart_notice_to_env
 from nanobot.utils.workspace_prompts import initialize_workspace_prompt
@@ -178,6 +178,21 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
 def builtin_command_palette() -> list[dict[str, str | bool]]:
     """Return structured command metadata for UI command palettes."""
     return [spec.as_dict() for spec in BUILTIN_COMMAND_SPECS]
+
+
+def builtin_command_starts_agent_turn(text: str) -> bool:
+    """Return whether WebUI ingress should expect a normal agent lifecycle."""
+    normalized = normalize_command_text(text)
+    command, separator, args = normalized.partition(" ")
+    spec = next(
+        (item for item in BUILTIN_COMMAND_SPECS if item.command == command.lower()),
+        None,
+    )
+    if spec is None or (separator and not spec.accepts_args):
+        return True
+    if spec.lifecycle == "agent_turn":
+        return True
+    return spec.lifecycle == "agent_turn_with_args" and bool(args.strip())
 
 
 async def cmd_stop(ctx: CommandContext) -> OutboundMessage:
@@ -404,16 +419,14 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
     msg = ctx.msg
 
     async def _run_dream():
-        async def _silent(*_args, **_kwargs):
-            pass
-
-        from nanobot.agent.memory import MemoryStore
+        from nanobot.agent.memory import DreamRunProgress, MemoryStore
 
         dream_session_key = MemoryStore.dream_session_key
         build_dream_commit_message = MemoryStore.build_dream_commit_message
         prune_dream_sessions = MemoryStore.prune_dream_sessions
 
         store = loop.context.memory
+        progress = DreamRunProgress()
         content = ""
         resp = None
         diff_body = ""
@@ -429,25 +442,30 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
                 return
             prompt, last_cursor = result
             key = dream_session_key()
+            resolve_dream_runtime = getattr(loop, "dream_runtime", None)
+            dream_runtime = resolve_dream_runtime() if callable(resolve_dream_runtime) else None
             resp = await loop.process_direct(
                 prompt,
                 session_key=key,
                 ephemeral=True,
                 tools=store.build_dream_tools(),
-                on_progress=_silent,
+                on_progress=progress,
+                runtime=dream_runtime,
             )
             elapsed = time.monotonic() - t0
-            # Ground truth: the real file delta, not the LLM's self-report.
+            # The real file delta grounds the audit record; clean completion
+            # decides whether this history batch has finished processing.
             diff_body = store.dream_content_diff()
-            productive = bool(diff_body) or (
-                not store.git.is_initialized()
-                and MemoryStore.dream_run_completed(resp)
+            completed = MemoryStore.dream_run_completed(
+                resp,
+                had_tool_errors=progress.had_tool_errors,
             )
-            if productive:
+            if completed:
                 store.set_last_dream_cursor(last_cursor)
-                content = f"Dream completed in {elapsed:.1f}s."
-            elif MemoryStore.dream_run_completed(resp):
-                content = f"Dream completed in {elapsed:.1f}s; no memory changes."
+                if diff_body:
+                    content = f"Dream completed in {elapsed:.1f}s."
+                else:
+                    content = f"Dream completed in {elapsed:.1f}s; no memory changes."
             else:
                 content = (
                     f"Dream did not complete after {elapsed:.1f}s; "

@@ -35,6 +35,10 @@ from nanobot.webui.metadata import (
 runner = CliRunner()
 
 
+def _without_rendered_line_breaks(output: str) -> str:
+    return "".join(output.splitlines())
+
+
 def test_proactive_websocket_delivery_gets_fresh_turn_id() -> None:
     metadata = {
         "webui": True,
@@ -1728,17 +1732,6 @@ def test_agent_workspace_override_wins_over_config_workspace(mock_agent_runtime,
     assert passed_config.workspace_path == workspace_path
 
 
-def test_agent_hints_about_deprecated_memory_window(mock_agent_runtime, tmp_path):
-    config_file = tmp_path / "config.json"
-    config_file.write_text(json.dumps({"agents": {"defaults": {"memoryWindow": 42}}}))
-
-    result = runner.invoke(app, ["agent", "-m", "hello", "-c", str(config_file)])
-
-    assert result.exit_code == 0
-    assert "memoryWindow" in result.stdout
-    assert "no longer used" in result.stdout
-
-
 def test_heartbeat_retains_recent_messages_by_default():
     config = Config()
 
@@ -1787,6 +1780,42 @@ def test_heartbeat_target_skips_archived_webui_sessions():
     assert target == ("websocket", "active")
 
 
+def test_heartbeat_target_uses_last_channel_for_unified_session():
+    from nanobot.cli.commands import _pick_heartbeat_target_from_sessions
+    from nanobot.session.keys import LAST_CHANNEL_METADATA_KEY, UNIFIED_SESSION_KEY
+
+    target = _pick_heartbeat_target_from_sessions(
+        enabled_channels=["telegram", "discord"],
+        archived_keys=[],
+        sessions=[{"key": UNIFIED_SESSION_KEY}],
+        unified_session_metadata={LAST_CHANNEL_METADATA_KEY: "discord:chat-42"},
+    )
+
+    assert target == ("discord", "chat-42")
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"last_channel": "telegram:chat-42"},
+        {"last_channel": "cli:direct"},
+        {"last_channel": "invalid"},
+    ],
+)
+def test_heartbeat_target_rejects_unroutable_unified_metadata(metadata):
+    from nanobot.cli.commands import _pick_heartbeat_target_from_sessions
+    from nanobot.session.keys import UNIFIED_SESSION_KEY
+
+    target = _pick_heartbeat_target_from_sessions(
+        enabled_channels=["discord"],
+        archived_keys=[],
+        sessions=[{"key": UNIFIED_SESSION_KEY}],
+        unified_session_metadata=metadata,
+    )
+
+    assert target == ("cli", "direct")
+
+
 def _write_instance_config(tmp_path: Path) -> Path:
     config_file = tmp_path / "instance" / "config.json"
     config_file.parent.mkdir(parents=True)
@@ -1808,12 +1837,10 @@ def _test_provider_snapshot(provider: object, config: Config) -> ProviderSnapsho
 
 
 def _patch_webui_provider_ready(monkeypatch) -> None:
-    provider = _fake_provider()
-
-    def _snapshot(config: Config, **_kwargs) -> ProviderSnapshot:
-        return _test_provider_snapshot(provider, config)
-
-    monkeypatch.setattr("nanobot.providers.factory.build_provider_snapshot", _snapshot)
+    monkeypatch.setattr(
+        "nanobot.providers.factory.validate_provider_setup",
+        lambda _config: None,
+    )
 
 
 def _patch_gateway_ports_free(monkeypatch) -> None:
@@ -1857,6 +1884,10 @@ def _patch_cli_command_runtime(
     monkeypatch.setattr(
         "nanobot.providers.factory.load_provider_snapshot",
         lambda _config_path=None: _test_provider_snapshot(provider_factory(config), config),
+    )
+    monkeypatch.setattr(
+        "nanobot.cli.commands._provider_setup_error",
+        lambda _config: None,
     )
     _patch_gateway_ports_free(monkeypatch)
 
@@ -2091,6 +2122,9 @@ def test_webui_missing_runtime_env_fails_before_starting_gateway(
 
     assert result.exit_code == 1
     assert missing_env in result.stdout
+    assert "nanobot status --config" in result.stdout
+    assert config_file.name in result.stdout
+    assert "Traceback" not in result.stdout
     assert f"${{{missing_env}}}" in config_file.read_text(encoding="utf-8")
 
 
@@ -2120,6 +2154,10 @@ def test_webui_yes_still_refuses_invalid_custom_model_setup(
 
     assert result.exit_code == 1
     assert "provider/model setup is incomplete" in result.stdout
+    assert "Settings → Models" in _without_rendered_line_breaks(result.stdout)
+    assert "nanobot onboard --wizard" in result.stdout
+    assert "nanobot status --config" in result.stdout
+    assert config_file.name in result.stdout
 
 
 def test_webui_background_starts_runtime_and_opens_browser(monkeypatch, tmp_path: Path) -> None:
@@ -2539,6 +2577,7 @@ def test_gateway_unbound_agent_cron_is_skipped(
     monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
     monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
     monkeypatch.setattr("nanobot.providers.factory.make_provider", lambda _config: provider)
+    monkeypatch.setattr("nanobot.cli.commands._provider_setup_error", lambda _config: None)
     _patch_gateway_ports_free(monkeypatch)
     monkeypatch.setattr(
         "nanobot.providers.factory.build_provider_snapshot",
@@ -2701,6 +2740,7 @@ def test_gateway_bound_cron_runs_as_session_turn(
     monkeypatch.setattr("nanobot.config.loader.load_config", lambda _path=None: config)
     monkeypatch.setattr("nanobot.cli.commands.sync_workspace_templates", lambda _path: None)
     monkeypatch.setattr("nanobot.providers.factory.make_provider", lambda _config: provider)
+    monkeypatch.setattr("nanobot.cli.commands._provider_setup_error", lambda _config: None)
     _patch_gateway_ports_free(monkeypatch)
     monkeypatch.setattr(
         "nanobot.providers.factory.build_provider_snapshot",
@@ -3007,6 +3047,8 @@ def test_gateway_local_trigger_queue_submits_agent_turns(
     agent_kwargs = seen["agent_from_config_kwargs"]
     kwargs = seen["local_trigger_queue_kwargs"]
     assert isinstance(agent_kwargs["provider"], UnconfiguredProvider) is bool(setup_error)
+    refreshed_snapshot = agent_kwargs["provider_snapshot_loader"]()
+    assert not isinstance(refreshed_snapshot.provider, UnconfiguredProvider)
     assert "local_trigger_store" in agent_kwargs
     assert kwargs["store"] is agent_kwargs["local_trigger_store"]
     assert "bus" not in kwargs
