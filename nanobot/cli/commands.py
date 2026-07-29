@@ -5,6 +5,7 @@ import os
 import select
 import signal
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext, suppress
@@ -2535,6 +2536,7 @@ def agent(
     else:
         # Interactive mode — route through bus like other channels
         from nanobot.bus.events import InboundMessage
+        from nanobot.cli.input_monitor import watch_control_keys
         _init_prompt_session()
         _model, _preset_tag = _model_display(config)
         _icon = config.agents.defaults.bot_icon or __logo__
@@ -2568,6 +2570,32 @@ def agent(
             turn_response: list[Any] = []
             renderer: StreamRenderer | None = None
             reasoning_buffer = _ReasoningBuffer()
+            shutdown_requested = asyncio.Event()
+            monitor_stop = asyncio.Event()
+            _interactive_loop = asyncio.get_running_loop()
+
+            async def _publish_stop_command() -> None:
+                """Publish a /stop command to cancel the active turn."""
+                await bus.publish_inbound(InboundMessage(
+                    channel=cli_channel,
+                    sender_id="user",
+                    chat_id=cli_chat_id,
+                    content="/stop",
+                ))
+
+            def _on_escape() -> None:
+                """Cancel the current turn (thread-safe)."""
+                fut = asyncio.run_coroutine_threadsafe(
+                    _publish_stop_command(), _interactive_loop
+                )
+                fut.add_done_callback(lambda f: f.exception() if f.exception() else None)
+
+            def _on_ctrl_c() -> None:
+                """Request app shutdown (thread-safe)."""
+                shutdown_requested.set()
+                turn_done.set()
+                agent_loop.stop()
+                monitor_stop.set()
 
             async def _consume_outbound():
                 while True:
@@ -2661,7 +2689,23 @@ def agent(
                             metadata={"_wants_stream": True},
                         ))
 
+                        # Start the control-key monitor during processing
+                        monitor_stop.clear()
+                        _monitor_thread = watch_control_keys(
+                            on_escape=_on_escape,
+                            on_ctrl_c=_on_ctrl_c,
+                            stop_event=monitor_stop,
+                        )
+
                         await turn_done.wait()
+
+                        # Signal the monitor to stop
+                        monitor_stop.set()
+                        if _monitor_thread is not None:
+                            _monitor_thread.join(timeout=2)
+
+                        if shutdown_requested.is_set():
+                            break
 
                         if turn_response:
                             response_msg = turn_response[0]
@@ -2690,6 +2734,7 @@ def agent(
                         console.print("\nGoodbye!")
                         break
             finally:
+                monitor_stop.set()
                 agent_loop.stop()
                 outbound_task.cancel()
                 await asyncio.gather(bus_task, outbound_task, return_exceptions=True)
