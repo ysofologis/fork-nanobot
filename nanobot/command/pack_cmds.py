@@ -130,3 +130,44 @@ async def cmd_pack_search(ctx: CommandContext) -> str:
         lines.append(f"  _{r['snippet']}_")
         lines.append("")
     return "\n".join(lines)
+
+
+async def cmd_pack_summarize(ctx: CommandContext) -> str:
+    """``/pack-summarize [name]`` — Generate or refresh a pack summary."""
+    pm = _pack_manager(ctx)
+    if pm is None:
+        return "Error: workspace not available."
+
+    name = ctx.args.strip()
+    if not name:
+        # Use current session's pack name if available
+        current = parse_session_key(ctx.key)
+        name = current.session_name
+
+    if not name:
+        return "Usage: `/pack-summarize <pack-name>` (or run within a pack session)"
+
+    try:
+        meta = pm.summarize(name)
+        summary = pm.get_summary(name)
+    except ValueError as exc:
+        return str(exc)
+    except Exception as exc:
+        return f"Error summarizing pack {name!r}: {exc}"
+
+    lines = [
+        f"📋 **Summary for** `{name}`",
+        f"   Sessions: {meta.get('session_count', 0)}",
+        f"   Updated: {meta.get('updated', '?')}",
+        "",
+    ]
+    if summary:
+        # Show first 2000 chars as preview
+        preview = summary[:2000]
+        if len(summary) > 2000:
+            preview += "\n… *(truncated)*"
+        lines.append(preview)
+    else:
+        lines.append("*(empty summary)*")
+
+    return "\n".join(lines)

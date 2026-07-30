@@ -8,7 +8,6 @@ files.
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,7 +23,6 @@ from nanobot.session.pack import SessionPackKey, parse_session_key
 PACKS_DIRNAME = "packs"
 PACK_META_FILENAME = "pack.json"
 SESSION_FILE_GLOB = "[0-9][0-9].md"
-_SESSION_FILE_RE = re.compile(r"^(\d{2})\.md$")
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +213,48 @@ class PackManager:
         shutil.rmtree(pack_dir, ignore_errors=True)
         logger.info("Deleted session pack {!r}", name)
         return True
+
+    def summarize(self, name: str, summary_text: str = "") -> dict[str, Any]:
+        """Read all session files for pack *name* and produce a summary.
+
+        If *summary_text* is provided, it is used directly. Otherwise the
+        method concatenates all session files with separators to form a
+        raw summary.
+
+        Writes ``summary.md`` and updates ``pack.json`` metadata.
+        Returns the updated metadata dict.
+        """
+        meta = self.get_pack(name)
+        if meta is None:
+            raise ValueError(f"Unknown pack: {name!r}")
+
+        if not summary_text:
+            # Build a raw concatenated summary from session files
+            parts: list[str] = []
+            pack_dir = self._pack_dir(name)
+            for idx in sorted(meta.get("indices", [])):
+                fpath = pack_dir / f"{idx:02d}.md"
+                if fpath.exists():
+                    header = f"--- Session {idx:02d} ---"
+                    parts.append(f"{header}\n{fpath.read_text(encoding='utf-8')}")
+            summary_text = "\n\n".join(parts) if parts else "(no sessions)"
+
+        # Write summary file
+        summary_path = self._pack_dir(name) / "summary.md"
+        summary_path.write_text(summary_text, encoding="utf-8")
+
+        # Update metadata
+        meta["summary"] = summary_text[:500]  # store preview in JSON
+        meta["updated"] = _utcnow()
+        self._write_meta(name, meta)
+        return meta
+
+    def get_summary(self, name: str) -> str | None:
+        """Return the full summary text for pack *name*, or ``None``."""
+        summary_path = self._pack_dir(name) / "summary.md"
+        if summary_path.exists():
+            return summary_path.read_text(encoding="utf-8")
+        return None
 
     # -- helpers ------------------------------------------------------------
 

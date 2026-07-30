@@ -194,6 +194,14 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         accepts_args=True,
     ),
     BuiltinCommandSpec(
+        "/pack-summarize",
+        "Summarize pack",
+        "Generate or refresh a session pack summary.",
+        "file-text",
+        "[name]",
+        accepts_args=True,
+    ),
+    BuiltinCommandSpec(
         "/pairing",
         "Manage pairing",
         "List, approve, deny or revoke pairing requests.",
@@ -1133,9 +1141,11 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact(USER_SHELL_COMMAND, cmd_user_shell)
     router.prefix(f"{USER_SHELL_COMMAND} ", cmd_user_shell)
     # Session pack commands (lazy import to avoid circular dependencies)
-    from nanobot.command.pack_cmds import cmd_pack, cmd_pack_list, cmd_pack_search
+    from nanobot.command.pack_cmds import cmd_pack, cmd_pack_list, cmd_pack_search, cmd_pack_summarize
     router.exact("/pack", cmd_pack)
     router.prefix("/pack ", cmd_pack)
     router.exact("/pack-list", cmd_pack_list)
     router.exact("/pack-search", cmd_pack_search)
     router.prefix("/pack-search ", cmd_pack_search)
+    router.exact("/pack-summarize", cmd_pack_summarize)
+    router.prefix("/pack-summarize ", cmd_pack_summarize)
