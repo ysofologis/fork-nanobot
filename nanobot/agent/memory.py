@@ -713,11 +713,10 @@ class MemoryStore:
                 if tools_used
                 else ""
             )
-            timestamp = cast(str, message.get("timestamp", "?"))
-            role = cast(str, message["role"])
-            lines.append(
-                f"[{timestamp[:16]}] {role.upper()}{tools}: {content}"
-            )
+            raw_timestamp = message.get("timestamp")
+            timestamp = str(raw_timestamp) if raw_timestamp is not None else "?"
+            role = str(message.get("role") or "unknown")
+            lines.append(f"[{timestamp[:16]}] {role.upper()}{tools}: {content}")
         return "\n".join(lines)
 
     def raw_archive(
@@ -931,6 +930,7 @@ class Consolidator:
             session_key=session.key,
         )
         session.last_consolidated = end_idx
+        session.provider_state = None
         self.sessions.save(session)
         return summary
 
@@ -1136,6 +1136,7 @@ class Consolidator:
                 if summary:
                     last_summary = summary
                 session.last_consolidated = end_idx
+                session.provider_state = None
                 self.sessions.save(session)
                 if not summary:
                     # LLM is degraded — stop hammering it this call;
@@ -1205,6 +1206,7 @@ class Consolidator:
 
             # Preserve history and advance only the replay boundary.
             session.last_consolidated = len(session.messages) - len(visible_suffix)
+            session.provider_state = None
             self.sessions.save(session)
 
             logger.info(

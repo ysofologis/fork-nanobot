@@ -31,9 +31,19 @@ class AutoCompact:
                     now: datetime | None = None) -> bool:
         if self._ttl <= 0 or not ts:
             return False
-        if isinstance(ts, str):
-            ts = datetime.fromisoformat(ts)
-        return ((now or datetime.now()) - ts).total_seconds() >= self._ttl * 60
+        try:
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts)
+            current = now or datetime.now()
+            if getattr(ts, "tzinfo", None) is not None or current.tzinfo is not None:
+                idle_seconds = current.timestamp() - ts.timestamp()
+            else:
+                idle_seconds = (current - ts).total_seconds()
+        except (OSError, OverflowError, TypeError, ValueError):
+            # list_sessions() forwards raw persisted metadata; an unusable value
+            # must not escape the idle scan and stop the agent loop.
+            return False
+        return idle_seconds >= self._ttl * 60
 
     def _has_compactable_idle_tail(self, key: str) -> bool:
         session = self.sessions.get_or_create(key)
@@ -124,10 +134,21 @@ class AutoCompact:
         if entry:
             return session, self._format_summary(entry[0], entry[1])
         # Cold path: summary persisted in session metadata (process restarted).
+        # Persisted metadata may outlive schema changes; a malformed summary must
+        # not abort turn preparation.
         meta = session.metadata.get("_last_summary")
         if isinstance(meta, dict):
-            return session, self._format_summary(
-                cast(str, meta["text"]),
-                datetime.fromisoformat(cast(str, meta["last_active"])),
-            )
+            summary_meta = cast(dict[str, object], meta)
+            text = summary_meta.get("text")
+            if isinstance(text, str) and text:
+                raw_last_active = summary_meta.get("last_active")
+                try:
+                    last_active = (
+                        datetime.fromisoformat(raw_last_active)
+                        if isinstance(raw_last_active, str)
+                        else session.updated_at
+                    )
+                except ValueError:
+                    last_active = session.updated_at
+                return session, self._format_summary(text, last_active)
         return session, None

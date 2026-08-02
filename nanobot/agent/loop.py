@@ -9,6 +9,7 @@ import dataclasses
 import inspect
 import os
 import time
+import weakref
 from collections.abc import Coroutine, Iterable, Mapping
 from contextlib import AbstractContextManager, ExitStack, nullcontext, suppress
 from dataclasses import dataclass, field
@@ -48,7 +49,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.bus.runtime_events import RuntimeEventBus
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
-from nanobot.providers.base import LLMProvider
+from nanobot.providers.base import LLMProvider, ProviderConversationState
 from nanobot.providers.factory import ProviderSnapshot
 from nanobot.runtime_context import (
     RUNTIME_CONTEXT_HISTORY_META,
@@ -105,6 +106,7 @@ if TYPE_CHECKING:
     from nanobot.triggers.local_store import LocalTriggerStore
 
 _T = TypeVar("_T")
+_SUBAGENT_PROVIDER_TASK_META = "subagent_provider_task_id"
 
 
 class TurnKind(Enum):
@@ -125,6 +127,7 @@ class TurnContext:
 
     history: list[dict[str, Any]] = field(default_factory=list)
     initial_messages: list[dict[str, Any]] = field(default_factory=list)
+    provider_state: ProviderConversationState | None = field(default=None, repr=False)
     request_context: RequestContext | None = None
     runtime_context_blocks: list[RuntimeContextBlock] = field(default_factory=list)
     attributes: dict[str, Any] = field(default_factory=dict)
@@ -242,6 +245,8 @@ class AgentLoop:
 
     _RUNTIME_CHECKPOINT_KEY = "runtime_checkpoint"
     _PENDING_USER_TURN_KEY = "pending_user_turn"
+    _PROVIDER_STATE_CHECKPOINT_VERSION_KEY = "provider_state_checkpoint_version"
+    _PROVIDER_STATE_CHECKPOINT_VERSION = "v1"
 
     def __init__(
         self,
@@ -394,7 +399,9 @@ class AgentLoop:
         self._runtime_context_providers: list[RuntimeContextProvider] = []
         self._active_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         self._background_tasks: set[asyncio.Task[Any]] = set()
-        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
         # Per-session pending queues for mid-turn message injection.
         # When a session has an active task, new messages for that session
         # are routed here instead of creating a new task.
@@ -854,6 +861,7 @@ class AgentLoop:
         turn_scopes: list[AbstractContextManager[Any]] | None = None,
         tools: ToolRegistry | None = None,
         request_context: RequestContext | None = None,
+        provider_state: ProviderConversationState | None = None,
     ) -> tuple[str | None, list[str], list[dict[str, Any]], str, bool]:
         """Run the agent iteration loop.
 
@@ -869,7 +877,18 @@ class AgentLoop:
         async def _checkpoint(payload: dict[str, Any]) -> None:
             if session is None:
                 return
-            self._set_runtime_checkpoint(session, payload)
+            public_payload = dict(payload)
+            private_state = public_payload.pop("provider_state", None)
+            public_payload.pop(self._PROVIDER_STATE_CHECKPOINT_VERSION_KEY, None)
+            if "provider_state" in payload and (
+                private_state is None
+                or isinstance(private_state, ProviderConversationState)
+            ):
+                session.provider_state = private_state
+                public_payload[self._PROVIDER_STATE_CHECKPOINT_VERSION_KEY] = (
+                    self._PROVIDER_STATE_CHECKPOINT_VERSION
+                )
+            self._set_runtime_checkpoint(session, public_payload)
 
         async def _drain_pending(*, limit: int = _MAX_INJECTIONS_PER_TURN) -> list[dict[str, Any]]:
             """Drain follow-up messages from the pending queue.
@@ -1067,6 +1086,7 @@ class AgentLoop:
                     session_metadata=session_metadata,
                     message_metadata=metadata,
                 ),
+                provider_state=provider_state,
             ))
         finally:
             turn_scope_stack.close()
@@ -1074,6 +1094,8 @@ class AgentLoop:
             reset_request_context(request_token)
             reset_file_states(file_state_token)
         self._last_usage = result.usage
+        if session is not None and not ephemeral:
+            session.provider_state = result.provider_state
         if result.stop_reason == "max_iterations":
             logger.warning("Max iterations ({}) reached", self.max_iterations)
             should_stream = turn_continuation.should_stream_budget_response(
@@ -1206,7 +1228,7 @@ class AgentLoop:
         session_key = self._effective_session_key(msg)
         if session_key != msg.session_key:
             msg = dataclasses.replace(msg, session_key_override=session_key)
-        lock = self._session_locks.setdefault(session_key, asyncio.Lock())
+        lock = self._get_session_lock(session_key)
         gate = self._concurrency_gate or nullcontext()
 
         delivery = self.turn_delivery_factory.unrouted(msg, session_key)
@@ -1657,14 +1679,24 @@ class AgentLoop:
             "extend_to_user": is_subagent,
         }
         ctx.history = session.get_history(**_hist_kwargs)
+        stored_state = session.provider_state
+        subagent_followup_persisted = False
         if is_subagent:
             # Keep the durable internal delivery as an assistant record, but
             # present this completion to the model as fresh follow-up input.
             # Providers without assistant-prefill support drop trailing
             # assistant messages, so using the persisted record as the current
             # prompt would hide an independently dispatched subagent result.
-            if self._persist_subagent_followup(session, ctx.msg):
+            subagent_followup_persisted = self._persist_subagent_followup(
+                session,
+                ctx.msg,
+            )
+            if subagent_followup_persisted:
                 logger.debug("Subagent result persisted for session {}", ctx.session_key)
+                # Establish a durable, replay-safe baseline before any fallible
+                # provider compatibility or prompt assembly work. A compatible
+                # staged state replaces this in a second atomic save below.
+                session.provider_state = None
                 self.sessions.save(session)
             ctx.input_persisted_early = True
         ctx.delivery.record_runtime(runtime)
@@ -1672,13 +1704,65 @@ class AgentLoop:
         ctx.request_context = self._request_context_for_turn(ctx)
         if ctx.kind is TurnKind.USER:
             ctx.runtime_context_blocks = await self._resolve_runtime_context_for_turn(ctx)
-        ctx.initial_messages = self._build_initial_messages(ctx)
+        staged_provider_state = False
+        if stored_state is not None and runtime.provider.can_resume_conversation_state(
+            stored_state,
+            runtime.model,
+        ):
+            current_provider_message = self.context.build_current_message(
+                ctx.msg.content,
+                media=ctx.msg.media if ctx.kind is TurnKind.USER and ctx.msg.media else None,
+                runtime_context_blocks=ctx.runtime_context_blocks,
+            )
+            task_id = ctx.msg.metadata.get("subagent_task_id") if is_subagent else None
+            already_staged = False
+            if isinstance(task_id, str) and task_id:
+                internal_meta = current_provider_message.get("_meta")
+                current_provider_message["_meta"] = {
+                    **(
+                        cast(dict[str, Any], internal_meta)
+                        if isinstance(internal_meta, dict)
+                        else {}
+                    ),
+                    _SUBAGENT_PROVIDER_TASK_META: task_id,
+                }
+                already_staged = any(
+                    isinstance(message.get("_meta"), dict)
+                    and cast(dict[str, Any], message["_meta"]).get(
+                        _SUBAGENT_PROVIDER_TASK_META
+                    )
+                    == task_id
+                    for message in stored_state.pending_messages
+                )
+            ctx.provider_state = (
+                stored_state
+                if already_staged
+                else stored_state.with_pending_messages([
+                    *stored_state.pending_messages,
+                    current_provider_message,
+                ])
+            )
+            if (
+                not ctx.ephemeral
+                and (ctx.kind is TurnKind.USER or subagent_followup_persisted)
+            ):
+                session.provider_state = ctx.provider_state
+                staged_provider_state = True
+        elif stored_state is not None:
+            session.provider_state = None
         if ctx.kind is TurnKind.USER:
             ctx.input_persisted_early = self._persist_user_message_early(
                 ctx.msg,
                 session,
                 runtime_context_blocks=ctx.runtime_context_blocks,
             )
+            if staged_provider_state and not ctx.input_persisted_early:
+                session.provider_state = stored_state
+        elif subagent_followup_persisted and staged_provider_state:
+            # Upgrade the replay-safe baseline to the resumable state before
+            # prompt assembly and the first model checkpoint.
+            self.sessions.save(session)
+        ctx.initial_messages = self._build_initial_messages(ctx)
 
         if ctx.on_progress is None:
             ctx.on_progress = ctx.delivery.progress_callback()
@@ -1712,6 +1796,7 @@ class AgentLoop:
             turn_scopes=ctx.turn_scopes,
             tools=ctx.tools,
             request_context=ctx.request_context,
+            provider_state=ctx.provider_state,
         )
         final_content, _, all_msgs, stop_reason, had_injections = result
         ctx.final_content = final_content
@@ -2049,7 +2134,36 @@ class AgentLoop:
             ):
                 overlap = size
                 break
-        session.messages.extend(restored_messages[overlap:])
+        appended_messages = restored_messages[overlap:]
+        session.messages.extend(appended_messages)
+        assistant_message_data = (
+            cast(dict[str, Any], assistant_message)
+            if isinstance(assistant_message, dict)
+            else None
+        )
+        provider_state_is_synchronized = (
+            checkpoint_data.get(self._PROVIDER_STATE_CHECKPOINT_VERSION_KEY)
+            == self._PROVIDER_STATE_CHECKPOINT_VERSION
+        )
+        phase = checkpoint_data.get("phase")
+        exact_final_response = (
+            phase == "final_response"
+            and assistant_message_data is not None
+            and assistant_message_data.get("role") == "assistant"
+            and not bool(checkpoint_data.get("completed_tool_results"))
+            and not bool(checkpoint_data.get("pending_tool_calls"))
+        )
+        exact_completed_tools = (
+            phase == "tools_completed"
+            and assistant_message_data is not None
+            and assistant_message_data.get("role") == "assistant"
+            and not bool(checkpoint_data.get("pending_tool_calls"))
+        )
+        if not (
+            provider_state_is_synchronized
+            and (exact_final_response or exact_completed_tools)
+        ):
+            session.provider_state = None
 
         self._clear_pending_user_turn(session)
         self._clear_runtime_checkpoint(session)
@@ -2070,6 +2184,7 @@ class AgentLoop:
                     "timestamp": datetime.now().isoformat(),
                 }
             )
+            session.provider_state = None
             session.updated_at = datetime.now()
 
         self._clear_pending_user_turn(session)
@@ -2108,7 +2223,7 @@ class AgentLoop:
             content=content, media=media or [], metadata=metadata,
         )
         # Share the dispatch lock so direct calls serialize with bus turns.
-        lock = self._session_locks.setdefault(session_key, asyncio.Lock())
+        lock = self._get_session_lock(session_key)
         try:
             async with lock:
                 kwargs: dict[str, Any] = {
@@ -2139,3 +2254,11 @@ class AgentLoop:
         finally:
             await self.runtime_event_publisher.run_status_changed(msg, session_key, "idle")
             self.runtime_event_publisher.clear_turn(session_key)
+
+    def _get_session_lock(self, session_key: str) -> asyncio.Lock:
+        """Return the shared lock while allowing idle session entries to expire."""
+        lock = self._session_locks.get(session_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_locks[session_key] = lock
+        return lock
