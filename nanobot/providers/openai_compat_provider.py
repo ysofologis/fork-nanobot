@@ -56,6 +56,34 @@ if TYPE_CHECKING:
 # that ``unittest.mock.patch`` can find and replace it.
 AsyncOpenAI: Any = None
 
+_GEMINI_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
+
+
+def _is_hosted_web_search_type(value: object) -> bool:
+    return isinstance(value, str) and (
+        value == "web_search" or value.startswith("web_search_")
+    )
+
+
+def _is_hosted_web_search_tool(tool: object) -> bool:
+    if not isinstance(tool, dict):
+        return False
+    tool_type = cast(dict[object, object], tool).get("type")
+    return _is_hosted_web_search_type(tool_type)
+
+
+def _is_named_function_tool(tool: object, name: str) -> bool:
+    """Return whether a Responses tool is a function with the given name."""
+    if not isinstance(tool, dict):
+        return False
+    record = cast(dict[object, object], tool)
+    if record.get("type") != "function":
+        return False
+    function = record.get("function")
+    if isinstance(function, dict):
+        return cast(dict[object, object], function).get("name") == name
+    return record.get("name") == name
+
 _ALLOWED_MSG_KEYS = frozenset({
     "role", "content", "tool_calls", "tool_call_id", "name",
     "reasoning_content", "extra_content",
@@ -421,6 +449,28 @@ def _merge_unique_list(base: object, override: object) -> object:
     return result
 
 
+def _merge_chat_extra_body(
+    kwargs: dict[str, Any],
+    extra_body: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge configured Chat Completions fields without clobbering tools."""
+    regular_extra = {key: value for key, value in extra_body.items() if key != "tools"}
+    merged = dict(kwargs)
+    if regular_extra:
+        existing = kwargs.get("extra_body", {})
+        merged["extra_body"] = _deep_merge(existing, regular_extra)
+
+    if "tools" in extra_body:
+        current_tools = kwargs.get("tools")
+        configured_tools = extra_body["tools"]
+        if isinstance(current_tools, list) and isinstance(configured_tools, list):
+            merged["tools"] = [*current_tools, *configured_tools]
+        else:
+            merged["tools"] = configured_tools
+
+    return merged
+
+
 def _merge_responses_extra_body(
     body: dict[str, Any],
     extra_body: dict[str, Any],
@@ -469,14 +519,11 @@ class OpenAICompatProvider(LLMProvider):
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
         self._spec = spec
-        self._extra_body = extra_body or {}
+        self._extra_body = dict(extra_body or {})
         self._api_type = api_type if spec and spec.name == "openai" else "auto"
         self._extra_query = extra_query or {}
         self._proxy = proxy or None
         self._native_compaction_available = True
-
-        if api_key and spec and spec.env_key:
-            self._setup_env(api_key, api_base)
 
         effective_base = api_base or (spec.default_api_base if spec else None) or None
         self._effective_base = effective_base
@@ -560,7 +607,7 @@ class OpenAICompatProvider(LLMProvider):
                     if os.environ.get("LANGFUSE_SECRET_KEY"):
                         logger.warning(
                             "LANGFUSE_SECRET_KEY is set but langfuse is not installed; "
-                            "install with `pip install langfuse` to enable tracing"
+                            "run `nanobot plugins enable langfuse` to enable tracing"
                         )
                     from openai import AsyncOpenAI as _AsyncOpenAI
                 AsyncOpenAI = _AsyncOpenAI
@@ -569,20 +616,6 @@ class OpenAICompatProvider(LLMProvider):
             if self._client is None:
                 raise RuntimeError("OpenAI client initialization did not produce a client")
             return self._client
-
-    def _setup_env(self, api_key: str, api_base: str | None) -> None:
-        """Set environment variables based on provider spec."""
-        spec = self._spec
-        if not spec or not spec.env_key:
-            return
-        if spec.is_gateway:
-            os.environ[spec.env_key] = api_key
-        else:
-            os.environ.setdefault(spec.env_key, api_key)
-        effective_base = api_base or spec.default_api_base
-        for env_name, env_val in spec.env_extras:
-            resolved = env_val.replace("{api_key}", api_key).replace("{api_base}", effective_base)
-            os.environ.setdefault(env_name, resolved)
 
     @classmethod
     def _apply_cache_control(
@@ -659,6 +692,8 @@ class OpenAICompatProvider(LLMProvider):
         if strip_reasoning:
             for msg in sanitized:
                 msg.pop("reasoning_content", None)
+        if self._spec and self._spec.name == "gemini":
+            sanitized = self._ensure_gemini_thought_signatures(sanitized)
 
         def map_id(value: Any) -> Any:
             if not isinstance(value, str):
@@ -735,6 +770,81 @@ class OpenAICompatProvider(LLMProvider):
             ):
                 clean["content"] = self._coerce_content_to_string(clean.get("content"))
         return self._enforce_role_alternation(sanitized)
+
+    @staticmethod
+    def _gemini_thought_signature(tool_call: dict[str, Any]) -> str | None:
+        """Return Gemini's thought signature attached to a tool call, if any.
+
+        Gemini's OpenAI-compatible endpoint returns tool calls with an
+        ``extra_content`` field: ``{"google": {"thought_signature": "..."}}``.
+        nanobot preserves it through the parse -> serialize round-trip so
+        replayed calls stay valid. Calls produced by other providers (e.g.
+        after a mid-conversation model switch) carry no signature.
+        """
+        extra = tool_call.get("extra_content")
+        if not isinstance(extra, dict):
+            return None
+        google = cast(dict[str, Any], extra).get("google")
+        if not isinstance(google, dict):
+            return None
+        signature = cast(dict[str, Any], google).get("thought_signature")
+        if isinstance(signature, str) and signature:
+            return signature
+        return None
+
+    def _ensure_gemini_thought_signatures(
+        self, messages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Keep migrated tool history wire-valid without losing tool context.
+
+        Gemini requires the first call in each function-call step to carry a
+        thought signature. Native parallel calls intentionally leave later
+        calls unsigned, so they must remain in their original order. For a
+        fully unsigned step imported from another provider, Google documents
+        ``skip_thought_signature_validator`` as a last-resort migration value.
+        """
+        kept: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role")
+            calls = msg.get("tool_calls")
+            if role != "assistant" or not isinstance(calls, list) or not calls:
+                kept.append(msg)
+                continue
+
+            call_values = cast(list[object], calls)
+            typed_calls = [
+                cast(dict[str, Any], tool_call)
+                for tool_call in call_values
+                if isinstance(tool_call, dict)
+            ]
+            if not typed_calls:
+                if msg.get("content"):
+                    clean = dict(msg)
+                    clean.pop("tool_calls", None)
+                    kept.append(clean)
+                continue
+
+            clean_calls = typed_calls
+            if self._gemini_thought_signature(typed_calls[0]) is None:
+                first = dict(typed_calls[0])
+                extra_value = first.get("extra_content")
+                extra = dict(cast(dict[str, Any], extra_value)) if isinstance(
+                    extra_value, dict
+                ) else {}
+                google_value = extra.get("google")
+                google = dict(cast(dict[str, Any], google_value)) if isinstance(
+                    google_value, dict
+                ) else {}
+                google["thought_signature"] = _GEMINI_SKIP_THOUGHT_SIGNATURE
+                extra["google"] = google
+                first["extra_content"] = extra
+                clean_calls = [first, *typed_calls[1:]]
+
+            if clean_calls != call_values:
+                msg = dict(msg)
+                msg["tool_calls"] = clean_calls
+            kept.append(msg)
+        return kept
 
     # ------------------------------------------------------------------
     # Build kwargs
@@ -942,14 +1052,11 @@ class OpenAICompatProvider(LLMProvider):
                 if msg.get("role") == "assistant" and "reasoning_content" not in msg:
                     msg["reasoning_content"] = ""
 
-        # Merge user-configured extra_body last so it can override or
-        # extend provider-specific defaults (e.g. chat_template_kwargs,
-        # guided_json, repetition_penalty).  Uses recursive merge so
-        # nested dicts like {"chat_template_kwargs": {"enable_thinking": false}}
-        # do not clobber sibling keys already set by thinking-style logic.
+        # Merge user-configured extra_body last so ordinary fields can override
+        # provider defaults. Keep configured tools at the top level: the SDK
+        # otherwise lets extra_body.tools replace nanobot's generated functions.
         if self._extra_body:
-            existing = kwargs.get("extra_body", {})
-            kwargs["extra_body"] = _deep_merge(existing, self._extra_body)
+            kwargs = _merge_chat_extra_body(kwargs, self._extra_body)
 
         return kwargs
 
@@ -974,8 +1081,8 @@ class OpenAICompatProvider(LLMProvider):
         provider_responses = spec_name in ("openai", "github_copilot")
         if not provider_responses and not model_responses:
             return False
-        if self._api_type == "responses":
-            # Explicit configuration means Responses is mandatory; do not
+        if self._responses_is_required():
+            # Explicit Responses-only request fields are mandatory; do not
             # consult the circuit breaker or fall back to Chat Completions.
             return True
         if provider_responses and (self._spec is None or self._spec.name != "github_copilot"):
@@ -993,6 +1100,25 @@ class OpenAICompatProvider(LLMProvider):
             return False
 
         return self._responses_circuit_allows_probe(model, reasoning_effort)
+
+    def _responses_is_required(self) -> bool:
+        return self._api_type == "responses" or self._hosted_web_search_enabled()
+
+    def _hosted_web_search_enabled(self) -> bool:
+        extra_body = getattr(self, "_extra_body", {})
+        configured_tools = extra_body.get("tools")
+        if "tools" in extra_body:
+            return isinstance(configured_tools, list) and any(
+                _is_hosted_web_search_tool(tool)
+                for tool in cast(list[object], configured_tools)
+            )
+        return bool(
+            self._spec
+            and any(
+                _is_hosted_web_search_type(tool_type)
+                for tool_type in getattr(self._spec, "responses_default_tools", ())
+            )
+        )
 
     def _responses_state_provider(self) -> str:
         spec_name = self._spec.name if self._spec is not None else "custom"
@@ -1111,7 +1237,8 @@ class OpenAICompatProvider(LLMProvider):
                     self._sanitize_empty_content(sanitized_state.pending_messages)
                 )
             )
-        preserve_reasoning = bool(self._spec and self._spec.name == "deepseek")
+        is_deepseek = bool(self._spec and self._spec.name == "deepseek")
+        preserve_reasoning = is_deepseek
         instructions, input_items, replayed = prepare_responses_input(
             sanitized_messages,
             state=sanitized_state,
@@ -1147,7 +1274,7 @@ class OpenAICompatProvider(LLMProvider):
 
         if not self._supports_temperature(model_name, reasoning_effort) and not preserve_reasoning:
             body["include"] = ["reasoning.encrypted_content"]
-        if reasoning_effort and reasoning_effort.lower() != "none":
+        if reasoning_effort and (reasoning_effort.lower() != "none" or is_deepseek):
             body["reasoning"] = {"effort": reasoning_effort}
         if replayed and "gpt-5.6" in model_name.lower():
             body.setdefault("reasoning", {})["context"] = "all_turns"
@@ -1157,8 +1284,37 @@ class OpenAICompatProvider(LLMProvider):
             body["tool_choice"] = tool_choice or "auto"
 
         extra_body = getattr(self, "_extra_body", {})
+        default_tools = getattr(self._spec, "responses_default_tools", ())
+        if "tools" not in extra_body and default_tools:
+            body["tools"] = [
+                *cast(list[object], body.get("tools", [])),
+                *({"type": tool_type} for tool_type in default_tools),
+            ]
         if extra_body:
             body = _merge_responses_extra_body(body, extra_body)
+
+        if self._hosted_web_search_enabled():
+            configured_tools = body.get("tools")
+            if isinstance(configured_tools, list):
+                managed_tools: list[object] = []
+                hosted_search_seen = False
+                for tool in cast(list[object], configured_tools):
+                    if _is_named_function_tool(tool, "web_search"):
+                        continue
+                    if _is_hosted_web_search_tool(tool):
+                        if hosted_search_seen:
+                            continue
+                        hosted_search_seen = True
+                    managed_tools.append(tool)
+                body["tools"] = managed_tools
+            if self._spec and self._spec.name == "openai":
+                source_include = "web_search_call.action.sources"
+                configured_include = body.get("include")
+                if isinstance(configured_include, list):
+                    if source_include not in configured_include:
+                        body["include"] = [*configured_include, source_include]
+                else:
+                    body["include"] = [source_include]
 
         return body
 
@@ -1771,7 +1927,7 @@ class OpenAICompatProvider(LLMProvider):
                         # falling back to /chat/completions cannot succeed and would
                         # hide the real error.
                         raise
-                    if self._api_type == "responses":
+                    if self._responses_is_required():
                         raise
                     if not self._should_fallback_from_responses_error(responses_error):
                         raise
@@ -1867,7 +2023,7 @@ class OpenAICompatProvider(LLMProvider):
                         # falling back to /chat/completions cannot succeed and would
                         # hide the real error.
                         raise
-                    if self._api_type == "responses":
+                    if self._responses_is_required():
                         raise
                     if not self._should_fallback_from_responses_error(responses_error):
                         raise

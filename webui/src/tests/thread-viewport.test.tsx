@@ -157,10 +157,11 @@ function getScroller(container: HTMLElement): HTMLElement {
 
 async function renderPromptRailViewport({
   scrollTo,
+  messages: promptMessages = makePromptExchangeMessages(5),
 }: {
   scrollTo?: (options?: ScrollToOptions) => void;
+  messages?: UIMessage[];
 } = {}) {
-  const promptMessages = makePromptExchangeMessages(5);
   const { container } = render(
     <ThreadViewport
       messages={promptMessages}
@@ -214,6 +215,38 @@ function ViewportWithPromptNavigator({ messages }: { messages: UIMessage[] }) {
 }
 
 describe("ThreadViewport", () => {
+  it("keeps reasoning disclosure anchored for pointer and keyboard toggles", () => {
+    const takeUserControl = vi.spyOn(
+      ThreadMotionCoordinator.prototype,
+      "takeUserControl",
+    );
+    render(
+      <ThreadViewport
+        messages={[{
+          id: "reasoning-1",
+          role: "assistant",
+          content: "",
+          reasoning: "A completed thought",
+          createdAt: 1,
+        }]}
+        isStreaming={false}
+        composer={<div>composer</div>}
+      />,
+    );
+
+    const disclosure = screen.getByRole("button", { name: "Thought" });
+    fireEvent.pointerDown(disclosure, { button: 0 });
+    expect(takeUserControl).toHaveBeenCalledTimes(1);
+
+    takeUserControl.mockClear();
+    fireEvent.keyDown(disclosure, { key: "Enter" });
+    expect(takeUserControl).toHaveBeenCalledTimes(1);
+
+    takeUserControl.mockClear();
+    fireEvent.keyDown(disclosure, { key: " " });
+    expect(takeUserControl).toHaveBeenCalledTimes(1);
+  });
+
   it("top-aligns short threads in the message rendering area", () => {
     render(
       <ThreadViewport
@@ -624,7 +657,7 @@ describe("ThreadViewport", () => {
     }
   });
 
-  it("coalesces streamed layout growth into frame-driven camera targets", async () => {
+  it("settles observed streamed layout growth before paint", async () => {
     const resizeObserver = stubResizeObserver();
     const followTo = vi.spyOn(ThreadCameraController.prototype, "followTo")
       .mockReturnValue("started");
@@ -711,10 +744,7 @@ describe("ThreadViewport", () => {
       });
       act(() => {
         contentObserver!.callback([], contentObserver as unknown as ResizeObserver);
-        contentObserver!.callback([], contentObserver as unknown as ResizeObserver);
       });
-      expect(followTo).not.toHaveBeenCalled();
-      await flushAnimationFrame();
       expect(followTo).toHaveBeenCalledTimes(1);
       expect(followTo).toHaveBeenLastCalledWith(1448);
       followTo.mockClear();
@@ -1116,6 +1146,36 @@ describe("ThreadViewport", () => {
     }
   });
 
+  it("restores thread scroll after the textarea autosize measurement collapses it", () => {
+    let scroller: HTMLElement | null = null;
+    const { container } = render(
+      <ThreadViewport
+        messages={messages}
+        isStreaming={false}
+        composer={(
+          <textarea
+            aria-label="Message input"
+            onInput={() => {
+              if (scroller) scroller.scrollTop = 692;
+            }}
+          />
+        )}
+      />,
+    );
+    scroller = getScroller(container);
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      writable: true,
+      value: 700,
+    });
+
+    fireEvent.input(screen.getByLabelText("Message input"), {
+      target: { value: "中文" },
+    });
+
+    expect(scroller.scrollTop).toBe(700);
+  });
+
   it("keeps the thread scrollport above a mobile soft keyboard", async () => {
     const visualViewport = stubVisualViewport({ innerHeight: 800, height: 480 });
     try {
@@ -1476,12 +1536,34 @@ describe("ThreadViewport", () => {
     expect(railMarkers.every((marker) => marker.style.width === "9px")).toBe(true);
 
     const targetPrompt = screen.getByRole("button", { name: "Jump to prompt: message 3" });
-    expect(within(targetPrompt).getByText("message 3")).toBeInTheDocument();
-    expect(within(targetPrompt).getByText("answer 3")).toBeInTheDocument();
+    fireEvent.pointerEnter(targetPrompt);
+    const preview = screen.getByTestId("prompt-rail-preview");
+    expect(within(preview).getByText("message 3")).toBeInTheDocument();
+    expect(within(preview).getByText("answer 3")).toBeInTheDocument();
 
     fireEvent.click(targetPrompt);
 
     expect(navigateTo).toHaveBeenCalledWith(1064);
+  });
+
+  it("renders markdown in prompt rail previews", async () => {
+    const promptMessages = makePromptExchangeMessages(5);
+    const answer = promptMessages.find((message) => message.id === "a3");
+    if (!answer) throw new TypeError("prompt answer fixture missing");
+    answer.content = "### Confirmed limit\n\nUse the **policy cap**.";
+
+    await renderPromptRailViewport({ messages: promptMessages });
+
+    const targetPrompt = screen.getByRole("button", { name: "Jump to prompt: message 3" });
+    fireEvent.pointerEnter(targetPrompt);
+    const preview = screen.getByTestId("prompt-rail-preview");
+
+    await waitFor(() => {
+      expect(preview.querySelector("h3")).toHaveTextContent("Confirmed limit");
+    });
+    expect(preview.querySelector("strong")).toHaveTextContent("policy cap");
+    expect(preview).not.toHaveTextContent("###");
+    expect(preview).not.toHaveTextContent("**");
   });
 
   it("lets direct paging input interrupt prompt rail navigation", async () => {
@@ -1878,6 +1960,12 @@ describe("ThreadViewport", () => {
   it("waits for the next conversation's transcript before restoring its bottom", async () => {
     const jumpTo = vi.spyOn(ThreadCameraController.prototype, "jumpTo");
     const followTo = vi.spyOn(ThreadCameraController.prototype, "followTo");
+    const handoffAnimation = {
+      cancel: vi.fn(),
+      oncancel: null,
+      onfinish: null,
+    } as unknown as Animation;
+    const animate = vi.fn(() => handoffAnimation);
     const oldMessages: UIMessage[] = [
       {
         id: "old-user",
@@ -1917,6 +2005,7 @@ describe("ThreadViewport", () => {
       scrollHeight: { configurable: true, value: 2400 },
       clientHeight: { configurable: true, value: 600 },
       scrollTop: { configurable: true, writable: true, value: 300 },
+      animate: { configurable: true, value: animate },
     });
     jumpTo.mockClear();
 
@@ -1932,6 +2021,14 @@ describe("ThreadViewport", () => {
     );
     expect(scroller.scrollTop).toBe(300);
     expect(jumpTo).not.toHaveBeenCalled();
+    expect(animate).toHaveBeenCalledWith(
+      [{ opacity: 1 }, { opacity: 0.82 }],
+      {
+        duration: 80,
+        easing: "cubic-bezier(0.2, 0, 0, 1)",
+        fill: "forwards",
+      },
+    );
 
     Object.defineProperty(scroller, "scrollHeight", {
       configurable: true,
@@ -1952,6 +2049,17 @@ describe("ThreadViewport", () => {
     await flushAnimationFrame();
     expect(jumpTo.mock.calls).toEqual([[2400]]);
     expect(followTo).toHaveBeenCalledWith(2400);
+    expect(handoffAnimation.cancel).toHaveBeenCalled();
+    expect(animate).toHaveBeenCalledWith(
+      [{ opacity: 0.82 }, { opacity: 1 }],
+      {
+        duration: 140,
+        easing: "cubic-bezier(0.2, 0, 0, 1)",
+      },
+    );
+    expect(jumpTo.mock.invocationCallOrder[0]).toBeLessThan(
+      animate.mock.invocationCallOrder[1],
+    );
   });
 
   it("waits for hydrated messages before fulfilling open-chat bottom scroll", async () => {

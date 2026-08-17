@@ -13,6 +13,8 @@ from rich.console import Console
 from nanobot import __logo__
 from nanobot.agent.hooks import create_file_edit_activity_hook
 from nanobot.agent.loop import AgentLoop
+from nanobot.agent.tools.mcp import MCPProvider
+from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.bus.outbound_events import (
     StreamDeltaEvent,
     StreamedResponseEvent,
@@ -45,8 +47,8 @@ console = Console()
 
 
 def agent(
-    message: str = typer.Option(None, "--message", "-m", help="Message to send to the agent"),
-    session_id: str = typer.Option("cli:direct", "--session", "-s", help="Session ID"),
+    message: str | None = typer.Option(None, "--message", "-m", help="Message to send to the agent"),
+    session_id: str | None = typer.Option(None, "--session", "-s", help="Session ID"),
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
     markdown: bool = typer.Option(
@@ -59,14 +61,64 @@ def agent(
         "--logs/--no-logs",
         help="Show nanobot runtime logs during chat",
     ),
+    classic: bool = typer.Option(
+        False,
+        "--classic",
+        "--no-tui",
+        help="Use the classic Python prompt instead of the native terminal UI",
+    ),
+    theme: str = typer.Option(
+        "auto",
+        "--theme",
+        help="Terminal UI appearance: auto, dark, or light",
+    ),
 ):
-    """Interact with the agent directly."""
+    """Chat in the terminal or send one message non-interactively."""
     from nanobot.bus.queue import MessageBus
     from nanobot.cron.service import CronService
     from nanobot.providers.factory import make_provider
     from nanobot.providers.image_generation import image_gen_provider_configs
 
     runtime_config = _load_runtime_config(config, workspace)
+    theme = theme.strip().lower()
+    if theme not in {"auto", "dark", "light"}:
+        raise typer.BadParameter("must be auto, dark, or light", param_hint="--theme")
+    native_tui = message is None and not classic
+    if native_tui:
+        from nanobot.cli.tui_launcher import TuiSessionError, TuiUnavailableError, launch_tui
+        from nanobot.config.loader import get_config_path
+
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise typer.BadParameter(
+                "the native TUI requires an interactive terminal; use --message for "
+                "one-shot input or --classic for the legacy prompt",
+                param_hint="terminal",
+            )
+        if not markdown:
+            raise typer.BadParameter("--no-markdown requires --classic", param_hint="--no-markdown")
+        if logs:
+            raise typer.BadParameter("--logs requires --classic", param_hint="--logs")
+        try:
+            exit_code = launch_tui(
+                runtime_config,
+                config_path=get_config_path().resolve(strict=False),
+                workspace_override=workspace,
+                session_id=session_id,
+                theme=theme,
+            )
+        except TuiSessionError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--session") from exc
+        except TuiUnavailableError as exc:
+            console.print(f"[red]Native TUI unavailable: {exc}[/red]")
+            console.print("[dim]Use `nanobot agent --classic` only if you want the old prompt.[/dim]")
+            raise typer.Exit(1) from exc
+        else:
+            if exit_code:
+                raise typer.Exit(exit_code)
+            return
+
+    session_id = session_id or "cli:direct"
+
     try:
         provider = make_provider(runtime_config)
     except ValueError as exc:
@@ -84,6 +136,8 @@ def agent(
     # Create cron service with workspace-scoped store
     cron_store_path = runtime_config.workspace_path / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
+    tools = ToolRegistry()
+    mcp_provider = MCPProvider.from_config(runtime_config, tools)
 
     _set_nanobot_logs(logs)
 
@@ -95,6 +149,7 @@ def agent(
             cron_service=cron,
             image_generation_provider_configs=image_gen_provider_configs(runtime_config),
             hook_factories=[create_file_edit_activity_hook],
+            tool_registry=tools,
         )
     except ValueError as exc:
         _print_agent_start_error(exc)
@@ -105,6 +160,12 @@ def agent(
             format_restart_completed_message(restart_notice.started_at_raw),
             render_markdown=False,
         )
+
+    async def _close_runtime() -> None:
+        try:
+            await agent_loop.aclose()
+        finally:
+            await mcp_provider.aclose()
 
     # Shared reference for progress callbacks
     _thinking: ThinkingSpinner | None = None
@@ -146,33 +207,36 @@ def agent(
 
         return _cli_progress
 
-    if message:
+    if message is not None:
         # Single message mode — direct call, no bus needed
         async def run_once() -> None:
-            renderer = StreamRenderer(
-                render_markdown=markdown,
-                bot_name=runtime_config.agents.defaults.bot_name,
-                bot_icon=runtime_config.agents.defaults.bot_icon,
-            )
-            response = await agent_loop.process_direct(
-                message,
-                session_id,
-                on_progress=_make_progress(renderer),
-                on_stream=renderer.on_delta,
-                on_stream_end=renderer.on_end,
-            )
-            if not renderer.streamed:
-                await renderer.close()
-                print_kwargs: dict[str, Any] = {}
-                if renderer.header_printed:
-                    print_kwargs["show_header"] = False
-                cli_terminal._print_agent_response(
-                    response.content if response else "",
+            try:
+                await mcp_provider.connect()
+                renderer = StreamRenderer(
                     render_markdown=markdown,
-                    metadata=response.metadata if response else None,
-                    **print_kwargs,
+                    bot_name=runtime_config.agents.defaults.bot_name,
+                    bot_icon=runtime_config.agents.defaults.bot_icon,
                 )
-            await agent_loop.close_mcp()
+                response = await agent_loop.process_direct(
+                    message,
+                    session_id,
+                    on_progress=_make_progress(renderer),
+                    on_stream=renderer.on_delta,
+                    on_stream_end=renderer.on_end,
+                )
+                if not renderer.streamed:
+                    await renderer.close()
+                    print_kwargs: dict[str, Any] = {}
+                    if renderer.header_printed:
+                        print_kwargs["show_header"] = False
+                    cli_terminal._print_agent_response(
+                        response.content if response else "",
+                        render_markdown=markdown,
+                        metadata=response.metadata if response else None,
+                        **print_kwargs,
+                    )
+            finally:
+                await _close_runtime()
 
         asyncio.run(run_once())
     else:
@@ -209,6 +273,7 @@ def agent(
             signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
         async def run_interactive() -> None:
+            await mcp_provider.connect()
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
             turn_done.set()
@@ -347,6 +412,6 @@ def agent(
                 agent_loop.stop()
                 outbound_task.cancel()
                 await asyncio.gather(bus_task, outbound_task, return_exceptions=True)
-                await agent_loop.close_mcp()
+                await _close_runtime()
 
         asyncio.run(run_interactive())
