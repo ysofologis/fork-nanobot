@@ -28,6 +28,7 @@ from nanobot.process_runtime import (
     ProcessRuntimePaths,
     ProcessStartOptions,
     ProcessStatus,
+    process_identity_record,
     process_is_running,
 )
 
@@ -233,6 +234,7 @@ class GatewayRuntime(ManagedProcessRuntime[ProcessStartOptions]):
         state = self._read_state()
         if state and result.status.pid == state.get("pid"):
             state["launch_mode"] = "background"
+            state["pending_pid_handoff"] = True
             self._write_state(state)
         return RuntimeResult(True, result.message, self.status())
 
@@ -287,20 +289,29 @@ class GatewayRuntime(ManagedProcessRuntime[ProcessStartOptions]):
             lease.wait_for_shutdown()
             with self._transition_lock(), self._lifecycle_lock():
                 current = self.status()
-                if current.running and current.pid != pid:
+                state = self._read_state() or {}
+                pid_handoff = (
+                    self.platform_name == "Windows"
+                    and current.running
+                    and current.pid != pid
+                    and current.pid == os.getppid()
+                    and state.get("pid") == current.pid
+                    and state.get("launch_mode") == "background"
+                    and state.get("pending_pid_handoff") is True
+                )
+                if current.running and current.pid != pid and not pid_handoff:
                     raise GatewayAlreadyRunningError(current)
                 if lease._shutdown_pending_locked():
                     continue
-                state = self._read_state() or {}
                 launch_mode: GatewayLaunchMode = (
                     "background"
-                    if state.get("pid") == pid and state.get("launch_mode") == "background"
+                    if state.get("launch_mode") == "background"
+                    and (state.get("pid") == pid or pid_handoff)
                     else "foreground"
                 )
                 state.update(
                     {
                         "pid": pid,
-                        "identity": self._process_identity(pid),
                         "started_at": datetime.now(UTC).isoformat(),
                         "platform": self.platform_name,
                         "port": options.port,
@@ -311,6 +322,9 @@ class GatewayRuntime(ManagedProcessRuntime[ProcessStartOptions]):
                         "launch_mode": launch_mode,
                     }
                 )
+                state.pop("pending_pid_handoff", None)
+                state.pop("stable_identity", None)
+                state.update(self.process_identity_record(pid))
                 self._write_state(state)
                 if launch_mode == "foreground":
                     lease._try_mark_persistent_locked()
@@ -452,8 +466,8 @@ class GatewayClientLease:
             self._write_state(state)
             return True
 
-    def release(self, *, timeout_s: int = 20) -> bool:
-        """Release this client and stop an ephemeral gateway when it was the last."""
+    def release(self, *, timeout_s: int = 20, wait_for_stop: bool = True) -> bool:
+        """Release this client, optionally leaving last-client shutdown to the monitor."""
         if not self._acquired:
             return False
         while True:
@@ -468,7 +482,7 @@ class GatewayClientLease:
                     self._acquired = False
                     should_stop = not clients and bool(state.get("auto_stop"))
                     self._write_or_clear(state)
-                if not should_stop:
+                if not should_stop or not wait_for_stop:
                     return False
                 result = self.runtime._stop(timeout_s=timeout_s)
                 stopped = result.ok or result.message in {
@@ -513,11 +527,12 @@ class GatewayClientLease:
 
     def _register(self, state: dict[str, object]) -> None:
         clients = self._clients(state)
-        clients[self.token] = {
+        record: dict[str, object] = {
             "pid": self.pid,
             "kind": self.kind,
-            "identity": self._process_identity(self.pid),
         }
+        record.update(process_identity_record(self._process_identity(self.pid), lease=True))
+        clients[self.token] = record
         self._write_state(state)
         self._acquired = True
 
@@ -531,16 +546,13 @@ class GatewayClientLease:
                 continue
             record = cast(dict[str, object], value)
             pid = record.get("pid")
-            identity = record.get("identity")
+            identity = record.get("stable_identity")
+            if identity is None:
+                identity = record.get("identity")
             if not isinstance(pid, int) or not self._process_is_running(pid):
                 stale.append(token)
                 continue
-            current_identity = self._process_identity(pid)
-            if (
-                identity is not None
-                and current_identity is not None
-                and identity != current_identity
-            ):
+            if self._process_identity_match(identity, pid) == "mismatch":
                 stale.append(token)
         for token in stale:
             clients.pop(token, None)
@@ -550,6 +562,23 @@ class GatewayClientLease:
         resolver = getattr(self.runtime, "process_identity", None)
         value = resolver(pid) if callable(resolver) else None
         return value if isinstance(value, (str, int)) else None
+
+    def _process_identity_match(
+        self,
+        recorded: object,
+        pid: int,
+    ) -> Literal["match", "mismatch", "unknown"]:
+        matcher = getattr(self.runtime, "process_identity_match", None)
+        if callable(matcher):
+            result = matcher(recorded, pid)
+            if result in {"match", "mismatch", "unknown"}:
+                return cast(Literal["match", "mismatch", "unknown"], result)
+        if recorded is None:
+            return "match"
+        current = self._process_identity(pid)
+        if current is None:
+            return "unknown"
+        return "match" if recorded == current else "mismatch"
 
     def _process_is_running(self, pid: int) -> bool:
         checker = getattr(self.runtime, "process_is_running", None)
