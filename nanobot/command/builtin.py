@@ -297,7 +297,8 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
             runtime=runtime,
         )
     if ctx_est <= 0:
-        ctx_est = loop._last_usage.get("prompt_tokens", 0)  # pyright: ignore[reportPrivateUsage]
+        last_usage = loop._last_usage  # pyright: ignore[reportPrivateUsage]
+        ctx_est = last_usage.input_tokens if last_usage is not None else 0
 
     # Fetch web search provider usage (best-effort, never blocks the response)
     search_usage_text: str | None = None
@@ -552,13 +553,6 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
             elapsed = time.monotonic() - t0
             content = f"Dream failed after {elapsed:.1f}s: {e}"
         finally:
-            from nanobot.webui.token_usage import record_response_token_usage
-
-            record_response_token_usage(
-                resp,
-                source="dream",
-                timezone_name=getattr(loop.context, "timezone", None),
-            )
             if store.git.is_initialized():
                 commit_msg = build_dream_commit_message("dream: manual run", diff_body)
                 sha = store.git.auto_commit(commit_msg)

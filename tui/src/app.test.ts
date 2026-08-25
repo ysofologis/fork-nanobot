@@ -7,8 +7,14 @@ import {
 } from "@opentui/core/testing"
 
 import { NanobotTui, sessionExitMessage, type AppOptions } from "./app"
-import type { MessageOptions, SlashCommand, WorkspaceScopePayload } from "./protocol"
+import type {
+  MessageOptions,
+  RecoveryState,
+  SlashCommand,
+  WorkspaceScopePayload,
+} from "./protocol"
 import type { HostAgentState, HostMetadata, TuiHost } from "./host"
+import type { Transcript } from "./transcript"
 
 const options: AppOptions = {
   wsUrl: "ws://localhost.invalid/ws",
@@ -91,6 +97,13 @@ function client(
     setWorkspaceScope(scope: WorkspaceScopePayload) {
       scopes.push(scope)
     },
+    updateRecovery(
+      _action: "continue" | "dismiss",
+      _chatId: string,
+      recoveryId: string,
+    ): Promise<RecoveryState> {
+      return Promise.resolve({ status: "recovered" as const, recovery_id: recoveryId })
+    },
   }
 }
 
@@ -110,6 +123,45 @@ describe("NanobotTui layout", () => {
   })
 
   const createRenderer = (options: Parameters<typeof createTestRenderer>[0]) => createTestRenderer(options)
+
+  test("keeps short transcripts and the composer anchored at the top", async () => {
+    setup = await createRenderer({
+      width: 100,
+      height: 18,
+      screenMode: "alternate-screen",
+      consoleMode: "disabled",
+    })
+    const app = mount(setup)
+    const ui = app as unknown as {
+      transcript: Transcript
+      title: BoxRenderable
+      status: TextRenderable
+    }
+    const positions = () => ({
+      transcriptHeight: ui.transcript.root.height,
+      titleY: ui.title.y,
+      statusY: ui.status.y,
+    })
+
+    let anchoredPositions: ReturnType<typeof positions> | undefined
+    for (const height of [18, 30, 36]) {
+      setup.resize(100, height)
+      await setup.renderOnce()
+      expect(ui.title.y).toBe(ui.transcript.root.y + ui.transcript.root.height)
+      expect(ui.status.y + ui.status.height).toBeLessThan(setup.renderer.height)
+      if (!anchoredPositions) anchoredPositions = positions()
+      else expect(positions()).toEqual(anchoredPositions)
+    }
+
+    ui.transcript.user("A short prompt")
+    await setup.renderOnce()
+    const promptPositions = positions()
+    expect(promptPositions.titleY).toBeGreaterThan(anchoredPositions?.titleY || 0)
+
+    setup.resize(100, 40)
+    await setup.renderOnce()
+    expect(positions()).toEqual(promptPositions)
+  })
 
   test("reflows a single retained layout across terminal resizes", async () => {
     setup = await createRenderer({
@@ -555,6 +607,97 @@ describe("NanobotTui layout", () => {
     }
   })
 
+  test("switches away from a running session without losing its queued follow-ups", async () => {
+    setup = await createRenderer({ width: 80, height: 24, screenMode: "alternate-screen" })
+    const original = globalThis.fetch
+    globalThis.fetch = ((input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith("/api/sessions")) {
+        return Promise.resolve(new Response(JSON.stringify({
+          sessions: [
+            { key: "websocket:chat", title: "Running chat", run_started_at: 1_700_000_000 },
+            { key: "websocket:other", title: "Other chat" },
+          ],
+        })))
+      }
+      if (url.endsWith("/api/webui/sidebar-state")) {
+        return Promise.resolve(new Response(JSON.stringify({})))
+      }
+      return Promise.resolve(new Response(JSON.stringify({
+        messages: [],
+        page: { has_more_before: false },
+      })))
+    }) as typeof fetch
+    const sent: string[] = []
+    const attached: string[] = []
+    let activeChatId = "chat"
+    const base = client(sent, attached)
+    const transport = {
+      ...base,
+      get activeChatId() { return activeChatId },
+      attach(chatId: string) {
+        attached.push(chatId)
+        activeChatId = chatId
+      },
+    }
+    const app = NanobotTui.mount(
+      setup.renderer,
+      { ...options, apiUrl: "http://nanobot.test", apiToken: "secret" },
+      transport,
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+    )
+    const ui = app as unknown as {
+      ready: boolean
+      activeTurn: boolean
+      composer: TextareaRenderable
+      sessionMenu: { visible: boolean }
+      queuePreview: { root: { visible: boolean } }
+      status: { plainText: string }
+    }
+
+    try {
+      app.accept({ event: "attached", chat_id: "chat" })
+      await waitUntil(() => ui.ready)
+      app.accept({ event: "goal_status", chat_id: "chat", status: "running", turn_id: "turn" })
+      ui.composer.setText("follow up in chat")
+      setup.mockInput.pressTab()
+      await waitUntil(() => ui.composer.plainText === "")
+      expect(ui.queuePreview.root.visible).toBe(true)
+
+      ui.composer.setText("/sessions")
+      ui.composer.submit()
+      await waitUntil(() => ui.sessionMenu.visible)
+      await Bun.sleep(120)
+      expect(ui.status.plainText).toContain("2 sessions")
+
+      ui.composer.setText("other")
+      ui.composer.submit()
+      await waitUntil(() => attached.at(-1) === "other")
+      app.accept({ event: "attached", chat_id: "other" })
+      await waitUntil(() => ui.ready)
+      expect(ui.activeTurn).toBe(false)
+      expect(ui.queuePreview.root.visible).toBe(false)
+
+      ui.composer.setText("/sessions")
+      ui.composer.submit()
+      await waitUntil(() => ui.sessionMenu.visible)
+      ui.composer.setText("running")
+      ui.composer.submit()
+      await waitUntil(() => attached.at(-1) === "chat")
+      app.accept({ event: "attached", chat_id: "chat" })
+      app.accept({ event: "goal_status", chat_id: "chat", status: "running", turn_id: "turn" })
+      await waitUntil(() => ui.ready && ui.activeTurn)
+      expect(ui.queuePreview.root.visible).toBe(true)
+      expect(sent).toEqual([])
+
+      app.accept({ event: "turn_end", chat_id: "chat", turn_id: "turn" })
+      await waitUntil(() => sent.length === 1)
+      expect(sent).toEqual(["follow up in chat"])
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
   test("refreshes expired API credentials before opening sessions", async () => {
     setup = await createRenderer({ width: 80, height: 24, screenMode: "alternate-screen" })
     const original = globalThis.fetch
@@ -901,6 +1044,127 @@ describe("NanobotTui layout", () => {
     } finally {
       globalThis.fetch = original
     }
+  })
+
+  test("offers clickable recovery actions without letting a late response revive stale state", async () => {
+    setup = await createRenderer({ width: 96, height: 24, screenMode: "alternate-screen" })
+    const calls: Array<{ action: string; chatId: string; recoveryId: string }> = []
+    let deferredResolve: ((state: RecoveryState) => void) | undefined
+    const recoveryClient = client()
+    recoveryClient.updateRecovery = (action, chatId, recoveryId) => {
+      calls.push({ action, chatId, recoveryId })
+      if (recoveryId === "recovery-1") {
+        return Promise.resolve({ status: "resuming", recovery_id: recoveryId })
+      }
+      if (action === "dismiss") {
+        return Promise.resolve({ status: "recovered", recovery_id: recoveryId })
+      }
+      return new Promise((resolve) => { deferredResolve = resolve })
+    }
+    const app = NanobotTui.mount(
+      setup.renderer,
+      options,
+      recoveryClient,
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+    )
+    app.accept({
+      event: "attached",
+      chat_id: "chat",
+      recovery_state: {
+        status: "awaiting_user",
+        recovery_id: "recovery-1",
+        reason: "tool execution interrupted",
+      },
+    })
+    const ui = app as unknown as {
+      activeTurn: boolean
+      composer: TextareaRenderable
+      recoveryNotice: {
+        visible: boolean
+        dismiss: TextRenderable
+        resume: TextRenderable
+      }
+      status: TextRenderable
+    }
+
+    await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("⚠ Task interrupted")
+    expect(setup.captureCharFrame()).toContain("Tools will not replay automatically")
+    expect(ui.status.plainText).toContain("continue or dismiss")
+    expect(ui.activeTurn).toBe(false)
+    expect(ui.composer.focused).toBe(true)
+
+    await setup.mockMouse.click(ui.recoveryNotice.resume.x + 1, ui.recoveryNotice.resume.y)
+    await waitUntil(() => calls.length === 1 && ui.activeTurn)
+    expect(calls[0]).toEqual({
+      action: "continue",
+      chatId: "chat",
+      recoveryId: "recovery-1",
+    })
+    expect(ui.recoveryNotice.visible).toBe(false)
+    expect(ui.status.plainText).toContain("Continuing")
+
+    app.accept({
+      event: "recovery_state",
+      chat_id: "chat",
+      status: "awaiting_user",
+      recovery_id: "recovery-2",
+    })
+    await setup.renderOnce()
+    await setup.mockMouse.click(ui.recoveryNotice.resume.x + 1, ui.recoveryNotice.resume.y)
+    await waitUntil(() => calls.length === 2)
+    app.accept({
+      event: "recovery_state",
+      chat_id: "chat",
+      status: "recovered",
+      recovery_id: "recovery-2",
+    })
+    deferredResolve?.({ status: "resuming", recovery_id: "recovery-2" })
+    await Bun.sleep(1)
+
+    expect(ui.recoveryNotice.visible).toBe(false)
+    expect(ui.activeTurn).toBe(false)
+    expect(ui.composer.focused).toBe(true)
+
+    app.accept({
+      event: "recovery_state",
+      chat_id: "chat",
+      status: "awaiting_user",
+      recovery_id: "recovery-unavailable",
+      can_continue: false,
+    })
+    await setup.renderOnce()
+    const unavailableFrame = setup.captureCharFrame()
+    expect(unavailableFrame).toContain("can’t be resumed safely")
+    expect(unavailableFrame).not.toContain("Continue")
+    expect(ui.status.plainText).toContain("dismiss to start a new message")
+
+    app.accept({
+      event: "recovery_state",
+      chat_id: "chat",
+      status: "awaiting_user",
+      recovery_id: "recovery-3",
+    })
+    await setup.renderOnce()
+    await setup.mockMouse.click(ui.recoveryNotice.dismiss.x + 1, ui.recoveryNotice.dismiss.y)
+    await waitUntil(() => calls.length === 3 && !ui.recoveryNotice.visible)
+    expect(calls[2]).toEqual({
+      action: "dismiss",
+      chatId: "chat",
+      recoveryId: "recovery-3",
+    })
+
+    app.accept({
+      event: "recovery_state",
+      chat_id: "chat",
+      status: "awaiting_user",
+      recovery_id: "recovery-4",
+      can_continue: false,
+    })
+    await setup.renderOnce()
+    expect(ui.recoveryNotice.resume.visible).toBe(false)
+    expect(ui.recoveryNotice.dismiss.visible).toBe(true)
   })
 
   test("preserves gateway slash lifecycle while local navigation stays in the same menu", async () => {
@@ -2155,7 +2419,7 @@ describe("NanobotTui layout", () => {
     expect(exited).toEqual(["chat"])
   })
 
-  test("exits immediately when Ctrl+C is pressed on an idle empty composer", async () => {
+  test("exits after Ctrl+C input dispatch completes on an idle empty composer", async () => {
     setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
     let closed = false
     const transport = client()
@@ -2169,7 +2433,9 @@ describe("NanobotTui layout", () => {
 
     setup.mockInput.pressCtrlC()
 
-    expect(closed).toBe(true)
+    expect(closed).toBe(false)
+    expect(setup.renderer.isDestroyed).toBe(false)
+    await waitUntil(() => closed)
     expect(setup.renderer.isDestroyed).toBe(true)
   })
 

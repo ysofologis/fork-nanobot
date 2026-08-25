@@ -37,12 +37,14 @@ from nanobot.bus.runtime_events import (
     TurnRuntimeAdmitted,
     UserInputAccepted,
 )
-from nanobot.providers.base import LLMProvider
+from nanobot.llm_usage.context import llm_usage_source
+from nanobot.providers.base import LLMProvider, LLMUsage
 from nanobot.providers.fallback_provider import FallbackModelObserver
 from nanobot.runtime_context import public_history_message
 from nanobot.session.goal_state import goal_state_ws_blob
 from nanobot.session.history_visibility import is_hidden_history_message
 from nanobot.session.manager import Session, SessionManager
+from nanobot.session.recovery import RecoveryCoordinator
 from nanobot.session.session_handles import session_handle_for_name
 from nanobot.session.session_messages import (
     SessionMessageEnvelope,
@@ -207,24 +209,25 @@ async def maybe_generate_webui_title(
         prompt += f"\nAssistant: {truncate_text(assistant_text, 1_000)}"
 
     try:
-        response = await provider.chat_with_retry(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "You write short, neutral chat titles. "
-                        "Return only the title text."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            tools=None,
-            model=model,
-            max_tokens=TITLE_GENERATION_MAX_TOKENS,
-            temperature=0.2,
-            reasoning_effort=TITLE_GENERATION_REASONING_EFFORT,
-            retry_mode="standard",
-        )
+        with llm_usage_source("system"):
+            response = await provider.chat_with_retry(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You write short, neutral chat titles. "
+                            "Return only the title text."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                tools=None,
+                model=model,
+                max_tokens=TITLE_GENERATION_MAX_TOKENS,
+                temperature=0.2,
+                reasoning_effort=TITLE_GENERATION_REASONING_EFFORT,
+                retry_mode="standard",
+            )
     except Exception:
         logger.debug("Failed to generate webui session title for {}", session_key, exc_info=True)
         return False
@@ -495,6 +498,7 @@ def build_webui_fallback_model_observer(bus: MessageBus) -> FallbackModelObserve
                         if context.runtime is not None
                         else None
                     ),
+                    fallback=True,
                 ),
                 metadata=context.metadata,
             )
@@ -510,6 +514,7 @@ class WebuiTurnCoordinator:
     bus: MessageBus
     sessions: SessionManager
     schedule_background: Callable[[Awaitable[None]], None]
+    recovery: RecoveryCoordinator | None = None
 
     def subscribe(self, runtime_events: RuntimeEventBus) -> Callable[[], None]:
         """Subscribe this coordinator to runtime events."""
@@ -653,6 +658,8 @@ class WebuiTurnCoordinator:
                 event.runtime.context_window_tokens if event.runtime is not None else None
             ),
         )
+        if self.recovery is not None:
+            await self.recovery.turn_completed(event.context.session_key)
         self._schedule_title_update_from_event(event)
 
     async def _handle_goal_state_changed(self, event: GoalStateChanged) -> None:
@@ -684,22 +691,13 @@ class WebuiTurnCoordinator:
             )
         )
 
-    async def publish_run_status(
-        self,
-        msg: InboundMessage,
-        status: str,
-        *,
-        started_at: float | None = None,
-    ) -> None:
-        await publish_turn_run_status(self.bus, msg, status, started_at=started_at)
-
     async def handle_turn_end(
         self,
         msg: InboundMessage,
         *,
         session_key: str,
         latency_ms: int | None,
-        usage: dict[str, int] | None = None,
+        usage: LLMUsage | None = None,
         context_window_tokens: int | None = None,
     ) -> None:
         if msg.channel != "websocket":
@@ -713,7 +711,7 @@ class WebuiTurnCoordinator:
                 event=TurnEndEvent(
                     latency_ms=latency_ms,
                     goal_state=goal_state_ws_blob(session.metadata),
-                    usage=usage or None,
+                    usage=usage,
                     context_window_tokens=context_window_tokens,
                 ),
                 metadata=msg.metadata,

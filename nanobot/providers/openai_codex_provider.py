@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
+import ssl
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
@@ -51,12 +51,26 @@ class OpenAICodexProvider(LLMProvider):
         default_model: str = "openai-codex/gpt-5.6-sol",
         proxy: str | None = None,
         extra_body: dict[str, Any] | None = None,
+        *,
+        provider_name: str = "openai_codex",
     ):
-        super().__init__(api_key=None, api_base=None)
+        super().__init__(api_key=None, api_base=None, provider_name=provider_name)
         self.default_model = default_model
         self.proxy = proxy or None
         self._extra_body = dict(extra_body or {})
         self._native_compaction_available = True
+        self._ssl_contexts: dict[bool, ssl.SSLContext] = {}
+
+    def _ssl_context(self, *, verify: bool) -> ssl.SSLContext:
+        """Reuse synchronous TLS setup across requests on the shared event loop."""
+        context = self._ssl_contexts.get(verify)
+        if context is None:
+            context = httpx.create_ssl_context(
+                verify=verify,
+                trust_env=self.proxy is None,
+            )
+            self._ssl_contexts[verify] = context
+        return context
 
     async def _call_codex(
         self,
@@ -130,7 +144,7 @@ class OpenAICodexProvider(LLMProvider):
                         DEFAULT_CODEX_URL,
                         headers,
                         wire_body,
-                        verify=True,
+                        verify=self._ssl_context(verify=True),
                         proxy=self.proxy,
                         on_content_delta=on_content_delta if emit_deltas else None,
                         on_thinking_delta=on_thinking_delta if emit_deltas else None,
@@ -146,7 +160,7 @@ class OpenAICodexProvider(LLMProvider):
                         DEFAULT_CODEX_URL,
                         headers,
                         wire_body,
-                        verify=False,
+                        verify=self._ssl_context(verify=False),
                         proxy=self.proxy,
                         on_content_delta=on_content_delta if emit_deltas else None,
                         on_thinking_delta=on_thinking_delta if emit_deltas else None,
@@ -412,7 +426,7 @@ async def _request_codex(
     url: str,
     headers: dict[str, str],
     body: dict[str, Any],
-    verify: bool,
+    verify: ssl.SSLContext | bool,
     proxy: str | None = None,
     on_content_delta: Callable[[str], Awaitable[None]] | None = None,
     on_thinking_delta: Callable[[str], Awaitable[None]] | None = None,
