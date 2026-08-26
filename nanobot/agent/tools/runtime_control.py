@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from nanobot.agent.tools.shell import ExecToolConfig
     from nanobot.agent.tools.web import WebToolsConfig
     from nanobot.config.schema import ModelPresetConfig
-    from nanobot.providers.base import LLMUsage
     from nanobot.utils.llm_runtime import LLMRuntime
 
 
@@ -29,13 +28,10 @@ RUNTIME_SNAPSHOT_KEYS = frozenset({
     "workspace",
     "provider_retry_mode",
     "max_tool_result_chars",
-    "current_iteration",
-    "_current_iteration",
     "tool_names",
     "web_config",
     "exec_config",
     "subagents",
-    "_last_usage",
 })
 
 RUNTIME_COMMAND_KEYS = frozenset({
@@ -61,12 +57,10 @@ class RuntimeSnapshot:
     workspace: Path | str
     provider_retry_mode: str
     max_tool_result_chars: int
-    current_iteration: int
     tool_names: list[str]
     web_config: dict[str, object]
     exec_config: dict[str, object]
     subagent_statuses: dict[str, dict[str, object]]
-    last_usage: Mapping[str, JsonScalar]
     scratchpad: dict[str, JsonValue]
 
     def as_mapping(self) -> Mapping[str, object]:
@@ -80,13 +74,10 @@ class RuntimeSnapshot:
             "workspace": self.workspace,
             "provider_retry_mode": self.provider_retry_mode,
             "max_tool_result_chars": self.max_tool_result_chars,
-            "current_iteration": self.current_iteration,
-            "_current_iteration": self.current_iteration,
             "tool_names": self.tool_names,
             "web_config": self.web_config,
             "exec_config": self.exec_config,
             "subagents": {"_task_statuses": self.subagent_statuses},
-            "_last_usage": self.last_usage,
         }
         assert values.keys() == RUNTIME_SNAPSHOT_KEYS
         return values
@@ -146,13 +137,7 @@ class _RuntimeControlTarget(Protocol):
     def workspace(self) -> Path: ...
 
     @property
-    def current_iteration(self) -> int: ...
-
-    @property
     def tool_names(self) -> list[str]: ...
-
-    @property
-    def last_usage(self) -> LLMUsage | None: ...
 
     def set_runtime_model(self, model: str) -> LLMRuntime: ...
 
@@ -186,12 +171,10 @@ class AgentRuntimeControl:
             ),
             provider_retry_mode=target.provider_retry_mode,
             max_tool_result_chars=target.max_tool_result_chars,
-            current_iteration=target.current_iteration,
             tool_names=list(target.tool_names),
             web_config=_snapshot_web_config(target.web_config),
             exec_config=_snapshot_exec_config(target.exec_config),
             subagent_statuses=_snapshot_subagent_statuses(target.subagents),
-            last_usage=target.last_usage.to_dict() if target.last_usage is not None else {},
             scratchpad=_snapshot_json_mapping(self.__scratchpad),
         )
 

@@ -20,6 +20,7 @@ import {
 
 import {
   NanobotClient,
+  fetchAvailableSkills,
   fetchHistory,
   fetchGatewayConnection,
   fetchMentionCandidates,
@@ -35,6 +36,7 @@ import {
   type MentionCandidate,
   type MessageOptions,
   type RecoveryState,
+  type SkillCandidate,
   type SlashCommand,
   type SessionSummary,
   type TokenUsage,
@@ -69,6 +71,12 @@ import {
   mentionQuery,
   type MentionQuery,
 } from "./mention-menu"
+import {
+  insertSkill,
+  SkillMenu,
+  skillQuery,
+  type SkillQuery,
+} from "./skill-menu"
 import { PromptQueue, type QueuedPrompt } from "./prompt-queue"
 import { QueuePreview, type QueuePreviewTheme } from "./queue-preview"
 import { RecoveryNotice, type RecoveryNoticeTheme } from "./recovery-notice"
@@ -170,7 +178,8 @@ const LIGHT: Palette = {
 }
 
 const COMPOSER_PLACEHOLDER = "Ask nanobot anything"
-const ACTIVE_COMPOSER_PLACEHOLDER = "Steer this turn…"
+const ACTIVE_COMPOSER_PLACEHOLDER = "Enter send now · Tab send next"
+const COMPACT_ACTIVE_COMPOSER_PLACEHOLDER = "Enter now · Tab next"
 const SHIMMER_PAUSE = 16
 const SHIMMER_BAND = 4
 const SHIMMER_INTERVAL_MS = 80
@@ -399,6 +408,7 @@ export class NanobotTui {
   private readonly commandMenu: CommandMenu
   private readonly sessionMenu: SessionMenu
   private readonly mentionMenu: MentionMenu
+  private readonly skillMenu: SkillMenu
   private readonly branchMenu: BranchMenu
   private readonly runtimeControls: RuntimeControls
   private readonly contextPanel: ContextPanel
@@ -455,6 +465,8 @@ export class NanobotTui {
   private readyDetail = ""
   private mentionCandidates: MentionCandidate[] = []
   private activeMentionQuery: MentionQuery | null = null
+  private skillCandidates: SkillCandidate[] = []
+  private activeSkillQuery: SkillQuery | null = null
   private transcriptNavigation: TranscriptNavigation = {
     awayFromBottom: false,
     unseenOutput: false,
@@ -478,6 +490,7 @@ export class NanobotTui {
   private hostBranch: string
   private readonly apiReauthenticator: ApiReauthenticator | undefined
   private apiRefreshPromise: Promise<GatewayApiConnection> | null = null
+  private skillLoadId = 0
 
   private constructor(
     renderer: CliRenderer,
@@ -517,6 +530,7 @@ export class NanobotTui {
       (session) => this.switchSession(session),
     )
     this.mentionMenu = new MentionMenu(renderer, commandMenuTheme(this.palette))
+    this.skillMenu = new SkillMenu(renderer, commandMenuTheme(this.palette))
     this.branchMenu = new BranchMenu(renderer, commandMenuTheme(this.palette))
     this.contextPanel = new ContextPanel(renderer, contextPanelTheme(this.palette))
     this.diffViewer = new DiffViewer(
@@ -704,6 +718,9 @@ export class NanobotTui {
         { name: "linefeed", action: "newline" },
         { name: "return", action: "submit" },
       ],
+      onCursorChange: () => {
+        if (!this.sessionMenu.visible && !this.branchMenu.visible) this.syncComposerMenus()
+      },
       onContentChange: () => {
         this.draft.prune(this.composer.plainText)
         this.runtimeControls.hide()
@@ -756,6 +773,7 @@ export class NanobotTui {
     this.shell.add(this.commandMenu.root)
     this.shell.add(this.sessionMenu.root)
     this.shell.add(this.mentionMenu.root)
+    this.shell.add(this.skillMenu.root)
     this.shell.add(this.branchMenu.root)
     this.shell.add(this.contextPanel.root)
     this.shell.add(this.runtimeControls.menuRoot)
@@ -810,6 +828,7 @@ export class NanobotTui {
     this.client.connect()
     void this.loadCommands()
     void this.loadMentions()
+    void this.loadSkills()
     this.runtimeControls.preload()
     this.renderer.start()
     // OpenTUI learns the real terminal background through OSC 10/11. Wait for
@@ -864,6 +883,15 @@ export class NanobotTui {
       const candidate = this.mentionMenu.choose()
       if (candidate) this.chooseMention(candidate, this.activeMentionQuery)
       return
+    }
+    if (this.skillMenu.visible && this.activeSkillQuery) {
+      const candidate = this.skillMenu.choose()
+      if (candidate) {
+        this.chooseSkill(candidate, this.activeSkillQuery)
+        return
+      }
+      this.skillMenu.hide()
+      this.activeSkillQuery = null
     }
     if (!visibleContent) return
     if (["exit", "quit", "/quit", ":q"].includes(visibleContent.toLowerCase())) {
@@ -926,12 +954,13 @@ export class NanobotTui {
     this.clearComposer()
     this.commandMenu.hide()
     this.mentionMenu.hide()
+    this.skillMenu.hide()
     this.recordPrompt(prompt.content)
     this.transcript.user(prompt.content, turnId)
     this.hostBlocked = false
     this.setCurrentTask(prompt.content)
     if (steering) {
-      this.status.content = `Steering current turn${this.promptQueue.length ? ` · ${this.promptQueue.length} queued` : ""}`
+      this.renderActiveStatus()
       this.updateMeta()
       return true
     }
@@ -1336,6 +1365,7 @@ export class NanobotTui {
     this.updateGatewayApiConnection(apiUrl, apiToken)
     void this.loadCommands()
     void this.loadMentions()
+    void this.loadSkills()
   }
 
   private async refreshApiConnection(
@@ -1477,6 +1507,7 @@ export class NanobotTui {
     this.clearComposer()
     this.commandMenu.hide()
     this.mentionMenu.hide()
+    this.skillMenu.hide()
     this.recordPrompt(content)
     this.syncQueuePreview()
     this.renderActiveStatus()
@@ -1576,6 +1607,33 @@ export class NanobotTui {
       if (key.name === "escape") {
         this.mentionMenu.hide()
         this.activeMentionQuery = null
+        this.updateMeta()
+        key.preventDefault()
+        return
+      }
+    }
+    if (this.skillMenu.visible) {
+      if (!key.ctrl && !key.meta && (key.name === "up" || key.name === "down")) {
+        this.skillMenu.move(key.name === "up" ? -1 : 1)
+        key.preventDefault()
+        return
+      }
+      if (!key.ctrl && !key.meta && key.name === "tab" && this.activeSkillQuery) {
+        const candidate = this.skillMenu.choose()
+        if (candidate) {
+          this.chooseSkill(candidate, this.activeSkillQuery)
+          key.preventDefault()
+          return
+        }
+        this.skillMenu.hide()
+        this.activeSkillQuery = null
+        this.updateMeta()
+        key.preventDefault()
+        return
+      }
+      if (key.name === "escape") {
+        this.skillMenu.hide()
+        this.activeSkillQuery = null
         this.updateMeta()
         key.preventDefault()
         return
@@ -1720,6 +1778,7 @@ export class NanobotTui {
     this.commandMenu.setTheme(commandMenuTheme(this.palette))
     this.sessionMenu.setTheme(commandMenuTheme(this.palette))
     this.mentionMenu.setTheme(commandMenuTheme(this.palette))
+    this.skillMenu.setTheme(commandMenuTheme(this.palette))
     this.branchMenu.setTheme(commandMenuTheme(this.palette))
     this.runtimeControls.setTheme(runtimeControlsTheme(this.palette))
     this.contextPanel.setTheme(contextPanelTheme(this.palette))
@@ -1738,6 +1797,7 @@ export class NanobotTui {
 
   private handleResize = (): void => {
     this.resizeComposer()
+    this.syncComposerPlaceholder()
     this.contextPanel.resize(this.renderer.height)
     this.diffViewer.resize(this.renderer.width)
     if (!this.host.hosted) this.title.visible = this.renderer.height >= 14
@@ -1749,6 +1809,7 @@ export class NanobotTui {
   private updateMeta(): void {
     const mode: FooterMode = this.runtimeControls.visible ? "runtime"
       : this.mentionMenu.visible ? "mention"
+      : this.skillMenu.visible ? "skill"
       : this.activeTurn ? "active"
       : this.branchMenu.visible ? "branch"
       : this.commandMenu.visible ? "command"
@@ -1915,13 +1976,16 @@ export class NanobotTui {
     // OpenTUI normally suppresses placeholder glyphs while the editor is not
     // empty. Explicitly removing them also invalidates their old cells, which
     // prevents stale placeholder text in differential/embedded terminals.
+    const activePlaceholder = this.renderer.width >= 40
+      ? ACTIVE_COMPOSER_PLACEHOLDER
+      : COMPACT_ACTIVE_COMPOSER_PLACEHOLDER
     const placeholder = this.composer.plainText
       ? null
       : this.sessionMenu.visible
         ? "Search sessions"
         : this.branchMenu.visible
           ? "Search branch points"
-          : this.activeTurn ? ACTIVE_COMPOSER_PLACEHOLDER : COMPOSER_PLACEHOLDER
+          : this.activeTurn ? activePlaceholder : COMPOSER_PLACEHOLDER
     if (this.composer.placeholder !== placeholder) this.composer.placeholder = placeholder
   }
 
@@ -1932,17 +1996,30 @@ export class NanobotTui {
   }
 
   private syncComposerMenus(): void {
-    this.activeMentionQuery = mentionQuery(this.composer.plainText, this.composer.cursorOffset)
-    const candidates = this.availableMentions()
-    if (this.activeMentionQuery && candidates.length) {
+    const value = this.composer.plainText
+    const cursor = this.composerStringCursor()
+    this.activeMentionQuery = mentionQuery(value, cursor)
+    this.activeSkillQuery = skillQuery(value, cursor)
+    const mentionCandidates = this.availableMentions()
+    if (this.activeMentionQuery && mentionCandidates.length) {
       this.commandMenu.hide()
+      this.skillMenu.hide()
       const limit = this.renderer.height >= 20 ? 7 : 4
       if (this.mentionMenu.visible) this.mentionMenu.update(this.activeMentionQuery.query, limit)
-      else this.mentionMenu.show(candidates, this.activeMentionQuery.query, limit)
+      else this.mentionMenu.show(mentionCandidates, this.activeMentionQuery.query, limit)
       this.updateMeta()
       return
     }
     this.mentionMenu.hide()
+    if (this.activeSkillQuery && this.skillCandidates.length) {
+      this.commandMenu.hide()
+      const limit = this.renderer.height >= 20 ? 7 : 4
+      if (this.skillMenu.visible) this.skillMenu.update(this.activeSkillQuery.query, limit)
+      else this.skillMenu.show(this.skillCandidates, this.activeSkillQuery.query, limit)
+      this.updateMeta()
+      return
+    }
+    this.skillMenu.hide()
     this.syncCommandMenu()
   }
 
@@ -1961,11 +2038,42 @@ export class NanobotTui {
   private chooseMention(candidate: MentionCandidate, query: MentionQuery): void {
     const inserted = insertMention(this.composer.plainText, candidate, query)
     this.composer.setText(inserted.value)
-    this.composer.cursorOffset = inserted.cursor
+    this.setComposerStringCursor(inserted.value, inserted.cursor)
     this.mentionMenu.hide()
     this.activeMentionQuery = null
     this.syncComposerPlaceholder()
     this.updateMeta()
+  }
+
+  private chooseSkill(candidate: SkillCandidate, query: SkillQuery): void {
+    const inserted = insertSkill(this.composer.plainText, candidate, query)
+    this.composer.setText(inserted.value)
+    this.setComposerStringCursor(inserted.value, inserted.cursor)
+    this.skillMenu.hide()
+    this.activeSkillQuery = null
+    this.syncComposerPlaceholder()
+    this.updateMeta()
+  }
+
+  private composerStringCursor(): number {
+    return this.composer.editBuffer.getTextRange(0, this.composer.cursorOffset).length
+  }
+
+  private setComposerStringCursor(value: string, cursor: number): void {
+    const target = Math.min(Math.max(cursor, 0), value.length)
+    const before = value.slice(0, target)
+    const row = before.split("\n").length - 1
+    const line = before.slice(before.lastIndexOf("\n") + 1)
+    let offset = row === 0 ? 0 : this.composer.editBuffer.getLineStartOffset(row)
+    const maxColumn = Math.max(8, line.length * 8 + 8)
+    for (let column = 0; column <= maxColumn; column += 1) {
+      const candidate = this.composer.editBuffer.positionToOffset(row, column)
+      if (candidate === 0 && (row !== 0 || column !== 0)) break
+      const candidateLength = this.composer.editBuffer.getTextRange(0, candidate).length
+      if (candidateLength > target) break
+      if (candidateLength === target) offset = candidate
+    }
+    this.composer.cursorOffset = offset
   }
 
   private setComposer(content: string): void {
@@ -2010,9 +2118,11 @@ export class NanobotTui {
     this.commandMenu.hide()
     this.hideSessionMenu()
     this.mentionMenu.hide()
+    this.skillMenu.hide()
     this.branchMenu.hide()
     this.contextPanel.hide()
     this.activeMentionQuery = null
+    this.activeSkillQuery = null
   }
 
   private dismissRuntimeControls(): void {
@@ -2040,6 +2150,25 @@ export class NanobotTui {
       if (this.activeMentionQuery) this.syncComposerMenus()
     } catch {
       // Mentions are additive; plain text input remains fully functional.
+    }
+  }
+
+  private async loadSkills(): Promise<void> {
+    const loadId = ++this.skillLoadId
+    try {
+      const candidates = await fetchAvailableSkills(
+        this.options.apiUrl,
+        this.options.apiToken,
+        this.apiReauthenticator,
+      )
+      if (loadId !== this.skillLoadId) return
+      this.skillCandidates = candidates
+      if (this.activeSkillQuery) {
+        this.skillMenu.hide()
+        this.syncComposerMenus()
+      }
+    } catch {
+      // Skill completion is additive; explicit $skill-name input still works.
     }
   }
 
@@ -2127,6 +2256,7 @@ export class NanobotTui {
     this.commandMenu.hide()
     this.dismissRuntimeControls()
     this.mentionMenu.hide()
+    this.skillMenu.hide()
     this.branchMenu.hide()
     this.contextPanel.hide()
     this.clearComposer()
@@ -2221,6 +2351,7 @@ export class NanobotTui {
     this.commandMenu.hide()
     this.hideSessionMenu()
     this.mentionMenu.hide()
+    this.skillMenu.hide()
     this.branchMenu.hide()
     this.contextPanel.hide()
     this.clearComposer()
@@ -2387,6 +2518,7 @@ export class NanobotTui {
     this.commandMenu.hide()
     this.hideSessionMenu()
     this.mentionMenu.hide()
+    this.skillMenu.hide()
     this.branchMenu.hide()
     this.clearComposer()
     this.status.content = "Reading agent context…"
@@ -2459,6 +2591,7 @@ export class NanobotTui {
     this.commandMenu.hide()
     this.hideSessionMenu()
     this.mentionMenu.hide()
+    this.skillMenu.hide()
     this.branchMenu.hide()
     this.contextPanel.hide()
     this.clearComposer()

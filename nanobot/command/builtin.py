@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from nanobot import __version__
 from nanobot.bus.events import INBOUND_META_USER_SHELL, OutboundMessage
 from nanobot.command.router import CommandContext, CommandRouter, normalize_command_text
+from nanobot.providers.base import LLMUsage
 from nanobot.session.pack import parse_session_key
 from nanobot.utils.helpers import build_status_content
 from nanobot.utils.restart import set_restart_notice_to_env
@@ -296,8 +297,8 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
             session,
             runtime=runtime,
         )
+    last_usage = LLMUsage.from_dict(session.metadata.get("_last_usage"))
     if ctx_est <= 0:
-        last_usage = loop._last_usage  # pyright: ignore[reportPrivateUsage]
         ctx_est = last_usage.input_tokens if last_usage is not None else 0
 
     # Fetch web search provider usage (best-effort, never blocks the response)
@@ -352,7 +353,7 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
 
     status_content = build_status_content(
         version=__version__, model=runtime.model,
-        start_time=loop._start_time, last_usage=loop._last_usage,
+        start_time=loop._start_time, last_usage=last_usage,
         context_window_tokens=runtime.context_window_tokens,
         session_msg_count=len(session.get_history(max_messages=0)),
         context_tokens_estimate=ctx_est,

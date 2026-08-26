@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from nanobot.agent.goal_permission import goal_mutation_allowed, goal_mutation_permission
+from nanobot.agent.tools.context import RequestContext
 from nanobot.bus.outbound_events import StreamedResponseEvent
 from nanobot.config.schema import AgentDefaults
 from nanobot.providers.base import GenerationSettings, LLMProvider, LLMResponse, ToolCallRequest
@@ -338,11 +339,11 @@ async def test_loop_max_iterations_message_stays_stable(tmp_path):
     loop.tools.execute = AsyncMock(return_value="ok")
     loop.max_iterations = 2
 
-    final_content, _, _, _, _ = await loop._run_agent_loop(
+    result = await loop._run_agent_loop(
         [], runtime=loop.llm_runtime()
     )
 
-    assert final_content == (
+    assert result.final_content == (
         "I reached the maximum number of tool call iterations (2) "
         "without completing the task. You can try breaking the task into smaller steps."
     )
@@ -359,16 +360,22 @@ async def test_loop_goal_turn_uses_standard_iteration_budget(tmp_path):
     loop.tools.execute = AsyncMock(return_value="ok")
     loop.max_iterations = 2
 
-    final_content, _, _, stop_reason, _ = await loop._run_agent_loop(
+    runtime = loop.llm_runtime()
+    result = await loop._run_agent_loop(
         [],
-        runtime=loop.llm_runtime(),
-        metadata={"original_command": "/goal"},
+        runtime=runtime,
+        request_context=RequestContext(
+            channel="cli",
+            chat_id="direct",
+            runtime=runtime,
+            metadata={"original_command": "/goal"},
+        ),
     )
 
-    assert stop_reason == "max_iterations"
+    assert result.stop_reason == "max_iterations"
     assert loop.provider.chat_with_retry.await_count == 3
     assert loop.provider.chat_with_retry.await_args_list[-1].kwargs["tools"] is None
-    assert final_content == (
+    assert result.final_content == (
         "I reached the maximum number of tool call iterations (2) "
         "without completing the task. You can try breaking the task into smaller steps."
     )
@@ -393,14 +400,14 @@ async def test_loop_stream_filter_handles_think_only_prefix_without_crashing(tmp
     async def on_stream_end(*, resuming: bool = False) -> None:
         endings.append(resuming)
 
-    final_content, _, _, _, _ = await loop._run_agent_loop(
+    result = await loop._run_agent_loop(
         [],
         runtime=loop.llm_runtime(),
         on_stream=on_stream,
         on_stream_end=on_stream_end,
     )
 
-    assert final_content == "Hello"
+    assert result.final_content == "Hello"
     assert deltas == ["Hello"]
     assert endings == [False]
 
@@ -420,11 +427,11 @@ async def test_loop_stream_filter_hides_partial_trailing_think_prefix(tmp_path):
     async def on_stream(delta: str) -> None:
         deltas.append(delta)
 
-    final_content, _, _, _, _ = await loop._run_agent_loop(
+    result = await loop._run_agent_loop(
         [], runtime=loop.llm_runtime(), on_stream=on_stream
     )
 
-    assert final_content == "Hello World"
+    assert result.final_content == "Hello World"
     assert deltas == ["Hello", " World"]
 
 
@@ -443,11 +450,11 @@ async def test_loop_stream_filter_hides_complete_trailing_think_tag(tmp_path):
     async def on_stream(delta: str) -> None:
         deltas.append(delta)
 
-    final_content, _, _, _, _ = await loop._run_agent_loop(
+    result = await loop._run_agent_loop(
         [], runtime=loop.llm_runtime(), on_stream=on_stream
     )
 
-    assert final_content == "Hello World"
+    assert result.final_content == "Hello World"
     assert deltas == ["Hello", " World"]
 
 
@@ -464,11 +471,11 @@ async def test_loop_retries_think_only_final_response(tmp_path):
 
     loop.provider.chat_with_retry = chat_with_retry
 
-    final_content, _, _, _, _ = await loop._run_agent_loop(
+    result = await loop._run_agent_loop(
         [], runtime=loop.llm_runtime()
     )
 
-    assert final_content == "Recovered answer"
+    assert result.final_content == "Recovered answer"
     assert call_count["n"] == 2
 
 
