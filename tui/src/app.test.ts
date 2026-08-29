@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { BoxRenderable, CliRenderEvents, TextareaRenderable, TextRenderable } from "@opentui/core"
+import {
+  BoxRenderable,
+  CliRenderEvents,
+  StyledText,
+  TextareaRenderable,
+  TextAttributes,
+  TextRenderable,
+} from "@opentui/core"
 import {
   MockTreeSitterClient,
   createTestRenderer,
@@ -14,8 +21,9 @@ import type {
   SlashCommand,
   WorkspaceScopePayload,
 } from "./protocol"
-import type { HostAgentState, HostMetadata, TuiHost } from "./host"
-import type { Transcript } from "./transcript"
+import type { TuiHost } from "./host"
+import type { ClipboardImageReader } from "./clipboard-image"
+import { userMessageText, type Transcript } from "./transcript"
 
 const options: AppOptions = {
   wsUrl: "ws://localhost.invalid/ws",
@@ -49,6 +57,20 @@ test("formats a reusable session ID after exit", () => {
   expect(sessionExitMessage("resume-chat")).toBe(
     "Resume with: nanobot agent --session websocket:resume-chat\n",
   )
+})
+
+test("projects image media as stable placeholders without exposing filenames", () => {
+  expect(userMessageText("What is this?", [
+    { name: "clipboard-image-2.png" },
+    { kind: "image", name: "screenshot.png" },
+    { kind: "file", name: "report.pdf" },
+  ])).toBe([
+    "What is this? [Image #2] [Image #1]",
+    "Attachments: report.pdf",
+  ].join("\n"))
+  expect(userMessageText("What is this?", [
+    { name: "clipboard-image-1.png" },
+  ], "What is this? [Image #1]")).toBe("What is this? [Image #1]")
 })
 
 function contrastRatio(foreground: string, background: string): number {
@@ -182,7 +204,7 @@ describe("NanobotTui layout", () => {
       expect(setup.renderer.height).toBe(height)
       expect(occurrences(frame, "Ask nanobot anything")).toBe(1)
       expect(occurrences(frame, "Ready")).toBe(0)
-      expect(occurrences(frame, "Connecting…")).toBe(1)
+      expect(occurrences(frame, "Getting ready…")).toBe(1)
       expect(occurrences(frame, "nanobot  ·  test/model")).toBe(1)
     }
 
@@ -306,6 +328,277 @@ describe("NanobotTui layout", () => {
     expect(ui.composer.plainText).toBe("")
   })
 
+  test("pastes clipboard images into removable placeholders and sends their data", async () => {
+    const sent: string[] = []
+    const sentOptions: MessageOptions[] = []
+    let disposed = false
+    const clipboard: ClipboardImageReader = {
+      read: async () => ({
+        mimeType: "image/png",
+        dataUrl: "data:image/png;base64,AAEC/w==",
+      }),
+      dispose: async () => { disposed = true },
+    }
+    setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
+    const transport = client(sent, [], [], sentOptions)
+    const recordSend = transport.send
+    transport.send = (content, messageOptions) => {
+      recordSend(content, messageOptions)
+      return `image-turn-${sent.length}`
+    }
+    const app = NanobotTui.mount(
+      setup.renderer,
+      options,
+      transport,
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+      undefined,
+      clipboard,
+    )
+    app.accept({ event: "attached", chat_id: "chat" })
+    await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+    const ui = app as unknown as {
+      composer: TextareaRenderable
+      draft: { imageCount: number }
+      promptHistory: string[]
+      status: { plainText: string }
+      transcript: {
+        userMessages: Set<{ renderable: TextRenderable }>
+      }
+    }
+
+    setup.mockInput.pressKey("v", { ctrl: true })
+    await waitUntil(() => ui.composer.plainText === "[Image #1] ")
+    expect(ui.status.plainText).toContain("Pasted Image #1")
+    const placeholderStyle = ui.composer.syntaxStyle?.getStyle("image.placeholder")
+    expect(placeholderStyle?.bold).toBeTrue()
+    expect(placeholderStyle?.fg?.toInts().slice(0, 3)).toEqual([239, 142, 48])
+    const placeholderStyleId = ui.composer.syntaxStyle?.getStyleId("image.placeholder")
+    if (placeholderStyleId === null || placeholderStyleId === undefined) {
+      throw new Error("image placeholder style was not registered")
+    }
+    expect(ui.composer.getLineHighlights(0)).toEqual([{
+      start: 0,
+      end: 10,
+      styleId: placeholderStyleId,
+      priority: 100,
+      hlRef: 0,
+    }])
+    ui.composer.setText("")
+    await waitUntil(() => ui.draft.imageCount === 0)
+    expect(ui.composer.getLineHighlights(0)).toEqual([])
+
+    setup.mockInput.pressKey("v", { ctrl: true })
+    await waitUntil(() => ui.composer.plainText === "[Image #1] ")
+    await setup.mockInput.typeText("[Image #1]")
+    ui.composer.submit()
+    await waitUntil(() => ui.status.plainText.includes("Duplicate image placeholder"))
+    expect(sent).toEqual([])
+    ui.composer.setText("[Image #1]")
+    ui.composer.submit()
+    await waitUntil(() => sent.length === 1)
+    expect(sent).toEqual([""])
+    expect(ui.promptHistory).toEqual([])
+    expect(sentOptions[0]?.media).toEqual([{
+      data_url: "data:image/png;base64,AAEC/w==",
+      name: "clipboard-image-1.png",
+    }])
+    expect(sentOptions[0]).not.toHaveProperty("displayContent")
+    await setup.flush()
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("[Image #1]")
+    expect(frame).not.toContain("clipboard-image-1.png")
+    const userContent = [...ui.transcript.userMessages].at(-1)?.renderable.content
+    expect(userContent).toBeInstanceOf(StyledText)
+    const imageChunk = (userContent as StyledText).chunks.find(({ text }) => text === "[Image #1]")
+    expect(imageChunk?.attributes).toBe(TextAttributes.BOLD)
+    expect(imageChunk?.fg?.toInts().slice(0, 3)).toEqual([239, 142, 48])
+
+    await setup.mockInput.typeText("这是什么？ ")
+    setup.mockInput.pressKey("v", { ctrl: true })
+    await waitUntil(() => ui.composer.plainText === "这是什么？ [Image #1] ")
+    setup.mockInput.pressTab()
+    expect(ui.status.plainText).toContain("Images cannot be queued")
+    expect(ui.composer.plainText).toBe("这是什么？ [Image #1] ")
+    ui.composer.submit()
+    await waitUntil(() => sent.length === 2)
+    expect(sent[1]).toBe("这是什么？")
+    expect(sentOptions[1]?.media).toHaveLength(1)
+    expect(sentOptions[1]).not.toHaveProperty("displayContent")
+    await setup.flush()
+    expect(setup.captureCharFrame()).toContain("这是什么？ [Image #1]")
+
+    setup.renderer.destroy()
+    expect(disposed).toBeTrue()
+  })
+
+  test("keeps image placeholders atomic for cursor movement and deletion", async () => {
+    const clipboard: ClipboardImageReader = {
+      read: async () => ({
+        mimeType: "image/png",
+        dataUrl: "data:image/png;base64,AAEC/w==",
+      }),
+      dispose: async () => undefined,
+    }
+    setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
+    const app = NanobotTui.mount(
+      setup.renderer,
+      options,
+      client(),
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+      undefined,
+      clipboard,
+    )
+    app.accept({ event: "attached", chat_id: "chat" })
+    await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+    const ui = app as unknown as {
+      composer: TextareaRenderable
+      draft: { imageCount: number }
+      status: { plainText: string }
+    }
+
+    setup.mockInput.pressKey("v", { ctrl: true })
+    await waitUntil(() => ui.composer.plainText === "[Image #1] ")
+    await setup.flush()
+    await setup.mockMouse.click(ui.composer.x + 5, ui.composer.y)
+    expect(ui.composer.cursorOffset > 0 && ui.composer.cursorOffset < 10).toBeFalse()
+    ui.composer.cursorOffset = 0
+    setup.mockInput.pressArrow("right")
+    await waitUntil(() => ui.composer.cursorOffset === 10)
+    setup.mockInput.pressArrow("left")
+    await waitUntil(() => ui.composer.cursorOffset === 0)
+
+    setup.mockInput.pressArrow("right", { shift: true })
+    await waitUntil(() => ui.composer.cursorOffset === 10)
+    await setup.mockInput.typeText("replacement")
+    await waitUntil(() => ui.draft.imageCount === 0)
+    expect(ui.composer.plainText).toContain("replacement")
+    expect(ui.composer.plainText).not.toContain("Image #1")
+
+    ui.composer.setText("")
+    setup.mockInput.pressKey("v", { ctrl: true })
+    await waitUntil(() => ui.composer.plainText === "[Image #1] ")
+    ui.composer.cursorOffset = 0
+    setup.mockInput.pressKey("DELETE")
+    await waitUntil(() => ui.draft.imageCount === 0)
+    expect(ui.composer.plainText.trim()).toBe("")
+    expect(ui.status.plainText).toContain("Removed Image #1")
+
+    ui.composer.setText("")
+    setup.mockInput.pressKey("v", { ctrl: true })
+    await waitUntil(() => ui.composer.plainText === "[Image #1] ")
+    ui.composer.cursorOffset = 10
+    setup.mockInput.pressBackspace()
+    await waitUntil(() => ui.draft.imageCount === 0)
+    expect(ui.composer.plainText.trim()).toBe("")
+
+    ui.composer.setText("")
+    setup.mockInput.pressKey("v", { ctrl: true })
+    await waitUntil(() => ui.composer.plainText === "[Image #1] ")
+    ui.composer.setText("Image #1] ")
+    await waitUntil(() => ui.draft.imageCount === 0)
+    expect(ui.composer.plainText.trim()).toBe("")
+  })
+
+  test("keeps clipboard failures visible while an agent turn is active", async () => {
+    const sent: string[] = []
+    const clipboard: ClipboardImageReader = {
+      read: async () => { throw new Error("No image in clipboard") },
+      dispose: async () => undefined,
+    }
+    setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
+    const app = NanobotTui.mount(
+      setup.renderer,
+      options,
+      client(sent),
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+      undefined,
+      clipboard,
+    )
+    app.accept({ event: "attached", chat_id: "chat" })
+    await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+    const composer = (app as unknown as { composer: TextareaRenderable }).composer
+    composer.setText("start")
+    composer.submit()
+    await waitUntil(() => sent.length === 1)
+
+    setup.mockInput.pressKey("v", { ctrl: true })
+    await waitUntil(() => setup?.captureCharFrame().includes("No image in clipboard") === true)
+  })
+
+  test("keeps image placeholders out of command arguments", async () => {
+    const sent: string[] = []
+    const clipboard: ClipboardImageReader = {
+      read: async () => ({
+        mimeType: "image/png",
+        dataUrl: "data:image/png;base64,AAEC/w==",
+      }),
+      dispose: async () => undefined,
+    }
+    setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
+    const app = NanobotTui.mount(
+      setup.renderer,
+      options,
+      client(sent),
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+      undefined,
+      clipboard,
+    )
+    app.accept({ event: "attached", chat_id: "chat" })
+    await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+    const ui = app as unknown as {
+      composer: TextareaRenderable
+      status: { plainText: string }
+      commandMenu: { setCommands(commands: SlashCommand[]): void }
+    }
+    ui.commandMenu.setCommands([{
+      command: "/model",
+      title: "Model",
+      description: "Show or switch model presets",
+      argHint: "[preset]",
+      lifecycle: "side_channel",
+      acceptsArgs: true,
+    }])
+
+    await setup.mockInput.typeText("/model ")
+    setup.mockInput.pressKey("v", { ctrl: true })
+    await waitUntil(() => ui.composer.plainText === "/model [Image #1] ")
+    ui.composer.submit()
+    await waitUntil(() => ui.status.plainText.includes("Images cannot be used with commands"))
+
+    expect(sent).toEqual([])
+    expect(ui.composer.plainText).toBe("/model [Image #1] ")
+  })
+
+  test("ignores a clipboard result that finishes after the renderer is destroyed", async () => {
+    let resolveRead: ((image: {
+      mimeType: "image/png"
+      dataUrl: string
+    }) => void) | undefined
+    let disposed = false
+    const clipboard: ClipboardImageReader = {
+      read: () => new Promise((resolve) => { resolveRead = resolve }),
+      dispose: async () => { disposed = true },
+    }
+    setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
+    const app = NanobotTui.mount(
+      setup.renderer,
+      options,
+      client(),
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+      undefined,
+      clipboard,
+    )
+    app.accept({ event: "attached", chat_id: "chat" })
+    await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+
+    setup.mockInput.pressKey("v", { ctrl: true })
+    await waitUntil(() => resolveRead !== undefined)
+    setup.renderer.destroy()
+    resolveRead?.({ mimeType: "image/png", dataUrl: "data:image/png;base64,AAAA" })
+    await Bun.sleep(10)
+    expect(disposed).toBeTrue()
+  })
+
   test("steers with Enter, queues with Tab, and restores queued text with Alt+Up", async () => {
     const sent: string[] = []
     const sentOptions: MessageOptions[] = []
@@ -412,6 +705,11 @@ describe("NanobotTui layout", () => {
       turn_id: "remote-steer",
       active_turn_id: "remote-turn",
       starts_turn: false,
+      media_urls: [{
+        kind: "image",
+        url: "/api/media/sig/image",
+        name: "clipboard-image-2.png",
+      }],
     })
     await setup.flush()
 
@@ -420,6 +718,9 @@ describe("NanobotTui layout", () => {
     expect(occurrences(frame, "hello from terminal A")).toBe(1)
     expect(occurrences(frame, "Attachments: report.pdf")).toBe(1)
     expect(occurrences(frame, "one more remote detail")).toBe(1)
+    expect(occurrences(frame, "[Image #2]")).toBe(1)
+    expect(frame).toContain("one more remote detail [Image #2]")
+    expect(frame).not.toContain("clipboard-image-2.png")
     expect(state.activeTurn).toBeTrue()
     expect(state.activeTurnId).toBe("remote-turn")
 
@@ -1790,19 +2091,26 @@ describe("NanobotTui layout", () => {
       composer: {
         backgroundColor: { intent: string; toInts(): number[] }
         textColor: { toInts(): number[] }
+        syntaxStyle: { getStyle(name: string): { fg?: { toInts(): number[] } } | undefined } | null
       }
       transcript: {
         markdown: Set<{ syntaxStyle: object }>
         frames: Set<{ borderColor: { toInts(): number[] } }>
         userRows: Set<{ backgroundColor: { intent: string; toInts(): number[] } }>
-        user(content: string): void
+        userMessages: Set<{ renderable: TextRenderable }>
+        user(content: string, turnId?: string, media?: Array<{ kind: "image"; name: string }>): void
       }
     }
-    internals.transcript.user("Existing question")
+    internals.transcript.user("Existing question", undefined, [{
+      kind: "image",
+      name: "clipboard-image-1.png",
+    }])
     const userRow = [...internals.transcript.userRows][0]
+    const userMessage = [...internals.transcript.userMessages][0]
     const markdown = [...internals.transcript.markdown][0]
     const sessionFrame = [...internals.transcript.frames][0]
     const darkSyntax = markdown?.syntaxStyle
+    const darkComposerSyntax = internals.composer.syntaxStyle
 
     expect(userRow?.backgroundColor.intent).toBe("default")
 
@@ -1821,6 +2129,12 @@ describe("NanobotTui layout", () => {
     expect(sessionFrame?.borderColor.toInts().slice(0, 3)).toEqual([212, 212, 216])
     expect(userRow?.backgroundColor.toInts().slice(0, 3)).toEqual([240, 240, 240])
     expect(markdown?.syntaxStyle).not.toBe(darkSyntax)
+    expect(internals.composer.syntaxStyle).not.toBe(darkComposerSyntax)
+    expect(internals.composer.syntaxStyle?.getStyle("image.placeholder")?.fg?.toInts().slice(0, 3))
+      .toEqual([185, 77, 11])
+    const recolored = userMessage?.renderable.content as StyledText
+    expect(recolored.chunks.find(({ text }) => text === "[Image #1]")?.fg?.toInts().slice(0, 3))
+      .toEqual([185, 77, 11])
   })
 
   test("distinguishes the composer with a quiet focus edge", async () => {
@@ -2384,6 +2698,85 @@ describe("NanobotTui layout", () => {
     expect(state()).toBe(false)
   })
 
+  test("shows actionable connection states without implementation details", async () => {
+    setup = await createRenderer({ width: 100, height: 20, screenMode: "alternate-screen" })
+    const app = mount(setup)
+    const ui = app as unknown as {
+      status: TextRenderable
+      handleStatus(
+        status: "starting" | "connecting" | "connected" | "reconnecting" | "unavailable" | "error",
+        detail?: string,
+        info?: {
+          endpoint: string
+          attempt: number
+          elapsedMs: number
+          health?: "ready" | "degraded" | "unreachable"
+        },
+      ): void
+    }
+
+    ui.handleStatus("starting", undefined, {
+      endpoint: "127.0.0.1:8769",
+      attempt: 1,
+      elapsedMs: 0,
+    })
+    expect(ui.status.plainText).toBe("Getting ready…")
+
+    ui.handleStatus("connecting")
+    expect(ui.status.plainText).toBe("Getting ready…")
+
+    ui.handleStatus("connected")
+    expect(ui.status.plainText).toBe("Getting ready…")
+
+    ui.handleStatus("error", "gateway sent an invalid event")
+    expect(ui.status.plainText).toBe("Getting ready…")
+    expect(ui.status.plainText).not.toContain("Unable")
+
+    ui.handleStatus("reconnecting", "connection closed", {
+      endpoint: "127.0.0.1:8769",
+      attempt: 2,
+      elapsedMs: 800,
+    })
+    expect(ui.status.plainText).toBe("Resuming…")
+
+    ui.handleStatus("reconnecting", "connection closed", {
+      endpoint: "127.0.0.1:8769",
+      attempt: 2,
+      elapsedMs: 900,
+      health: "degraded",
+    })
+    expect(ui.status.plainText).toBe("Resuming…")
+
+    ui.handleStatus("unavailable", "connection refused", {
+      endpoint: "127.0.0.1:8769",
+      attempt: 7,
+      elapsedMs: 3_200,
+      health: "degraded",
+    })
+    expect(ui.status.plainText).toBe("Still getting ready…")
+    expect(ui.status.plainText).not.toContain("Unable")
+
+    ui.handleStatus("unavailable", "connection refused", {
+      endpoint: "127.0.0.1:8769",
+      attempt: 8,
+      elapsedMs: 3_500,
+      health: "unreachable",
+    })
+    expect(ui.status.plainText).toBe("Nanobot is taking longer to respond…")
+    expect(ui.status.plainText).not.toContain("Unable")
+
+    ui.handleStatus("error", "gateway bootstrap failed: HTTP 401", {
+      endpoint: "127.0.0.1:8769",
+      attempt: 9,
+      elapsedMs: 3_800,
+    })
+    expect(ui.status.plainText).toBe("Nanobot unavailable · restart nanobot")
+    expect(ui.status.plainText).not.toContain("gateway")
+    expect(ui.status.plainText).not.toContain("127.0.0.1")
+    expect(ui.status.plainText).not.toContain("HTTP")
+    expect(ui.status.plainText).not.toContain("attempt")
+  })
+
   test("replays events after asynchronous history hydration", async () => {
     setup = await createRenderer({ width: 80, height: 22, screenMode: "alternate-screen" })
     const original = globalThis.fetch
@@ -2444,7 +2837,12 @@ describe("NanobotTui layout", () => {
       client(sent),
       new MockTreeSitterClient({ autoResolveTimeout: 0 }),
     )
-    const composer = (app as unknown as { composer: TextareaRenderable }).composer
+    const ui = app as unknown as {
+      composer: TextareaRenderable
+      ready: boolean
+      status: TextRenderable
+    }
+    const composer = ui.composer
 
     try {
       app.accept({ event: "attached", chat_id: "chat" })
@@ -2452,16 +2850,18 @@ describe("NanobotTui layout", () => {
       app.accept({ event: "attached", chat_id: "chat" })
       composer.setText("sent during reconnect")
       composer.submit()
-      await Bun.sleep(5)
+      await waitUntil(() => ui.status.plainText.includes("Not sent"))
 
       expect(sent).toEqual([])
       expect(composer.plainText).toBe("sent during reconnect")
+      expect(ui.status.plainText).toContain("Not sent · press Enter to retry when ready")
 
       resolveReconnect(new Response(JSON.stringify({
         messages: [{ role: "assistant", content: "restored history" }],
         page: { has_more_before: false },
       })))
-      await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+      await waitUntil(() => ui.ready)
+      expect(ui.status.plainText).toBe("Not sent · press Enter to retry")
       composer.submit()
       await waitUntil(() => sent.length === 1)
       await setup.flush()
@@ -2480,14 +2880,24 @@ describe("NanobotTui layout", () => {
     const app = mount(setup, sent)
     const composer = (app as unknown as { composer: TextareaRenderable }).composer
     const connection = app as unknown as {
-      handleStatus(status: "connecting" | "connected", detail?: string): void
+      handleStatus(
+        status: "reconnecting" | "connected",
+        detail?: string,
+        info?: { endpoint: string; attempt: number; elapsedMs: number },
+      ): void
     }
 
     app.accept({ event: "attached", chat_id: "chat" })
     await Bun.sleep(1)
-    connection.handleStatus("connecting", "reconnecting")
+    connection.handleStatus("reconnecting", "connection closed", {
+      endpoint: "127.0.0.1:8769",
+      attempt: 1,
+      elapsedMs: 0,
+    })
     connection.handleStatus("connected")
     composer.setText("draft before attach")
+    composer.submit()
+    await Bun.sleep(5)
     composer.submit()
     await Bun.sleep(5)
 
@@ -2495,9 +2905,13 @@ describe("NanobotTui layout", () => {
     expect(composer.plainText).toBe("draft before attach")
 
     app.accept({ event: "attached", chat_id: "chat" })
+    app.accept({ event: "attached", chat_id: "chat" })
     await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+    expect(sent).toEqual([])
     composer.submit()
     await waitUntil(() => sent.length === 1)
+    app.accept({ event: "attached", chat_id: "chat" })
+    await Bun.sleep(5)
 
     expect(sent).toEqual(["draft before attach"])
   })
@@ -2660,23 +3074,18 @@ describe("NanobotTui layout", () => {
   })
 })
 
-describe("NanobotTui in a Herdr pane", () => {
-  test("keeps local navigation while reporting task, session, lifecycle, and metadata", async () => {
-    const setup = await createTestRenderer({ width: 80, height: 22, screenMode: "main-screen" })
-    const states: Array<{ state: HostAgentState; message?: string }> = []
-    const metadata: HostMetadata[] = []
-    const sessions: string[] = []
+describe("NanobotTui with a Herdr pane title reporter", () => {
+  test("keeps the full terminal experience while reporting task titles", async () => {
+    const setup = await createTestRenderer({ width: 80, height: 22, screenMode: "alternate-screen" })
+    const titles: string[] = []
     let released = false
     const host: TuiHost = {
-      hosted: true,
-      reportState(state, message) { states.push({ state, ...(message ? { message } : {}) }) },
-      reportSession(sessionId) { sessions.push(sessionId) },
-      reportMetadata(value) { metadata.push(value) },
+      reportTitle(title) { titles.push(title) },
       release() { released = true },
     }
     const app = NanobotTui.mount(
       setup.renderer,
-      { ...options, branch: "feat/herdr" },
+      options,
       client(),
       new MockTreeSitterClient({ autoResolveTimeout: 0 }),
       host,
@@ -2712,10 +3121,14 @@ describe("NanobotTui in a Herdr pane", () => {
     })
     await setup.flush()
     const activeFrame = setup.captureCharFrame()
+    expect(activeFrame).toContain(">_  nanobot")
+    expect(activeFrame).toContain("test/model")
     expect(occurrences(activeFrame, "› Ship the Herdr integration")).toBe(1)
     expect(occurrences(activeFrame, "app.ts")).toBe(1)
     expect(ui.composer.placeholder).toBe("Enter send now · Tab send next")
     expect(ui.composerFrame.height).toBe(3)
+    expect(titles).toEqual(["Ship the Herdr integration"])
+
     app.accept({
       event: "turn_end",
       chat_id: "chat",
@@ -2726,27 +3139,6 @@ describe("NanobotTui in a Herdr pane", () => {
         ui_summary: "Approval required",
       },
     })
-    await setup.flush()
-    const frame = setup.captureCharFrame()
-
-    expect(sessions).toEqual(["chat"])
-    expect(occurrences(frame, "› Ship the Herdr integration")).toBe(1)
-    expect(frame).not.toContain(">_  nanobot")
-    expect(frame).not.toContain("test/model")
-    expect(states.some(({ state }) => state === "working")).toBe(true)
-    expect(states.at(-1)).toEqual({ state: "blocked", message: "Approval required" })
-    expect(metadata.at(-1)).toMatchObject({
-      model: "default · test/model",
-      branch: "feat/herdr",
-      workspace: "/tmp/nanobot-workspace",
-      task: "Ship the Herdr integration",
-      action: "Approval required",
-    })
-
-    setup.resize(42, 6)
-    await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("› Ship the Herdr integration")
-
     app.accept({
       event: "user_message",
       chat_id: "chat",
@@ -2754,13 +3146,8 @@ describe("NanobotTui in a Herdr pane", () => {
       turn_id: "turn-2",
       starts_turn: true,
     })
-    app.accept({
-      event: "turn_end",
-      chat_id: "chat",
-      turn_id: "turn-2",
-      goal_state: { active: false },
-    })
-    expect(states.at(-1)?.state).toBe("idle")
+
+    expect(titles).toEqual(["Ship the Herdr integration", "Approved"])
 
     app.stop()
     expect(released).toBe(true)

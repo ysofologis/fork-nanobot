@@ -271,7 +271,7 @@
       "save": "Enregistrer",
       "saving": "Enregistrement",
       "saveOrder": "Enregistrer l’ordre",
-      "savePreset": "Enregistrer le préréglage",
+      "savePreset": "Enregistrer",
       "delete": "Supprimer",
       "deleting": "Suppression...",
       "edit": "Modifier",
@@ -1182,6 +1182,7 @@
       "modelNotConfigured": "Modèle non configuré",
       "configureModel": "Configurer le modèle",
       "switchModel": "Changer le modèle de cette conversation",
+      "manageModels": "Gérer les modèles",
       "context": {
         "tooltip": "Contexte · {{tokens}}{{capacity}}",
         "meterDescription": "{{context}}. {{percent}} % utilisé."

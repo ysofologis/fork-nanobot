@@ -271,7 +271,7 @@
       "save": "저장",
       "saving": "저장 중",
       "saveOrder": "순서 저장",
-      "savePreset": "프리셋 저장",
+      "savePreset": "저장",
       "delete": "삭제",
       "deleting": "삭제 중...",
       "edit": "편집",
@@ -1182,6 +1182,7 @@
       "modelNotConfigured": "모델이 설정되지 않음",
       "configureModel": "모델 설정",
       "switchModel": "이 대화에서 사용할 모델 전환",
+      "manageModels": "모델 관리",
       "context": {
         "tooltip": "컨텍스트 · {{tokens}}{{capacity}}",
         "meterDescription": "{{context}}. {{percent}}% 사용 중."
