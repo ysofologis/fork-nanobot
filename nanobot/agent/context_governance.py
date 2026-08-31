@@ -68,6 +68,7 @@ class ContextGovernanceConfig:
     context_block_limit: int | None = None
     max_tokens: int | None = None
     inflight_start_index: int = 0
+    tool_results_dir: Path | None = None
 
 
 class ContextGovernor:
@@ -124,6 +125,7 @@ class ContextGovernor:
                 tool_call_id,
                 result,
                 max_chars=config.max_tool_result_chars,
+                results_dir=config.tool_results_dir,
             )
         except Exception:
             logger.exception(

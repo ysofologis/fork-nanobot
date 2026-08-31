@@ -118,6 +118,27 @@ _SUBAGENT_PROVIDER_TASK_META = "subagent_provider_task_id"
 _SUBAGENT_TERMINAL_WAIT_SECONDS = 300.0
 
 
+def _runtime_checkpoint_cache_dir() -> Path | None:
+    """Return a fast local dir for volatile runtime-checkpoint sidecars.
+
+    Runtime checkpoints are rewritten after every tool batch. When the
+    workspace (and config dir) sit on a slow mount, writing them there stalls
+    the event loop by tens of ms per write. Prefer a local cache dir; fall
+    back to ``None`` (next to the session files) when nothing local exists.
+    """
+    try:
+        base = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser()
+        if not base.is_dir():
+            base = Path("/tmp")
+        if not base.is_dir():
+            return None
+        from nanobot.utils.helpers import ensure_dir
+
+        return ensure_dir(base / "nanobot" / "runtime-checkpoints")
+    except Exception:
+        return None
+
+
 class TurnKind(Enum):
     USER = auto()
     SYSTEM = auto()
@@ -349,6 +370,17 @@ class AgentLoop:
             if max_tool_result_chars is not None
             else defaults.max_tool_result_chars
         )
+        # Oversized tool results are regenerable caches; prefer a fast local
+        # dir over the (possibly slow-mounted) workspace. A relative path is
+        # resolved against the workspace for backwards compatibility.
+        tool_results_dir = defaults.tool_results_dir
+        if tool_results_dir:
+            resolved_results_dir = Path(tool_results_dir).expanduser()
+            if not resolved_results_dir.is_absolute():
+                resolved_results_dir = workspace / resolved_results_dir
+            self.tool_results_dir = resolved_results_dir
+        else:
+            self.tool_results_dir = None  # helpers.py default: {workspace}/.nanobot/tool-results
         self.provider_retry_mode = provider_retry_mode
         self.tool_hint_max_length = (
             tool_hint_max_length if tool_hint_max_length is not None
@@ -486,6 +518,7 @@ class AgentLoop:
             extra["session_manager"] = SessionManager(
                 config.workspace_path,
                 sessions_root=data_dir / "sessions" if data_dir is not None else None,
+                checkpoint_dir=_runtime_checkpoint_cache_dir(),
             )
         provider = extra.pop("provider", None) or make_provider(config)
         resolved = config.resolve_preset()
@@ -1161,6 +1194,7 @@ class AgentLoop:
                 runtime=runtime,
                 max_iterations=self.max_iterations,
                 max_tool_result_chars=self.max_tool_result_chars,
+                tool_results_dir=self.tool_results_dir,
                 hook=hook,
                 concurrent_tools=True,
                 workspace=effective_scope.project_path,
@@ -2265,9 +2299,49 @@ class AgentLoop:
         return True
 
     def _set_runtime_checkpoint(self, session: Session, payload: dict[str, Any]) -> None:
-        """Persist the latest in-flight turn state into session metadata."""
+        """Persist the latest in-flight turn state into session metadata.
+
+        The disk write is coalesced and deferred to a worker thread so a slow
+        session mount never stalls the event loop between tool batches.
+        """
         session.metadata[self._RUNTIME_CHECKPOINT_KEY] = payload
-        self.sessions.save_runtime_checkpoint(session)
+        self._schedule_checkpoint_write(session)
+
+    def _schedule_checkpoint_write(self, session: Session) -> None:
+        """Schedule a coalesced, off-loop write of the session's runtime checkpoint."""
+        key = session.key
+        loop = asyncio.get_running_loop()
+        # Capture the latest payload + provider state snapshot synchronously so
+        # the worker thread never reads a mutated session.
+        payload = dict(session.metadata.get(self._RUNTIME_CHECKPOINT_KEY) or {})
+        provider_state = session.provider_state
+        token = (payload, provider_state)
+
+        pending = getattr(self, "_pending_checkpoint_writes", None)
+        if pending is None:
+            pending = {}
+            self._pending_checkpoint_writes = pending
+
+        # Coalesce: only the latest payload per session is ever written.
+        if pending.get(key) == token:
+            return
+        pending[key] = token
+
+        def _write() -> None:
+            try:
+                with suppress(Exception):
+                    self.sessions.save_runtime_checkpoint_snapshot(
+                        session,
+                        payload=payload,
+                        provider_state=provider_state,
+                    )
+            finally:
+                # Only clear if our token is still the pending one (a newer
+                # checkpoint may have been scheduled while we were writing).
+                if pending.get(key) == token:
+                    pending.pop(key, None)
+
+        loop.create_task(asyncio.to_thread(_write))
 
     def _mark_pending_user_turn(self, session: Session) -> None:
         session.metadata[self._PENDING_USER_TURN_KEY] = True

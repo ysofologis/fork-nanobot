@@ -542,7 +542,14 @@ def _cleanup_tool_result_buckets(root: Path, current_bucket: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _write_text_atomic(path: Path, content: str) -> None:
+def _write_text_atomic(path: Path, content: str, *, fsync: bool = True) -> None:
+    """Atomically write *content* to *path* via temp file + rename.
+
+    ``fsync=False`` skips both the file and directory fsync. Use it for
+    regenerable caches (e.g. tool-result offload files), where the raw data
+    still lives in the session transcript and durability is not required.
+    Keep ``fsync=True`` for durable state (config, OAuth tokens, pairing).
+    """
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     existing_mode: int | None = None
     with suppress(OSError):
@@ -553,14 +560,16 @@ def _write_text_atomic(path: Path, content: str) -> None:
                 os.chmod(tmp, existing_mode)
             f.write(content)
             f.flush()
-            os.fsync(f.fileno())
+            if fsync:
+                os.fsync(f.fileno())
         tmp.replace(path)
-        with suppress(OSError, NotImplementedError):
-            dfd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(dfd)
-            finally:
-                os.close(dfd)
+        if fsync:
+            with suppress(OSError, NotImplementedError):
+                dfd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
     finally:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
@@ -573,8 +582,15 @@ def maybe_persist_tool_result(
     content: Any,
     *,
     max_chars: int,
+    results_dir: Path | None = None,
 ) -> Any:
-    """Persist oversized tool output and replace it with a stable reference string."""
+    """Persist oversized tool output and replace it with a stable reference string.
+
+    Offload files are written under *results_dir* when given, otherwise under
+    ``{workspace}/.nanobot/tool-results``. The offload is a regenerable cache
+    (the raw result still lives in the session transcript), so callers can
+    point it at a fast local directory when the workspace sits on a slow mount.
+    """
     if workspace is None or max_chars <= 0:
         return content
 
@@ -593,7 +609,7 @@ def maybe_persist_tool_result(
     if len(text_payload) <= max_chars:
         return cast(Any, content)
 
-    root = ensure_dir(workspace / _TOOL_RESULTS_DIR)
+    root = ensure_dir(results_dir if results_dir is not None else workspace / _TOOL_RESULTS_DIR)
     bucket = ensure_dir(root / safe_filename(session_key or "default"))
     try:
         _cleanup_tool_result_buckets(root, bucket)
@@ -602,9 +618,9 @@ def maybe_persist_tool_result(
     path = bucket / f"{safe_filename(tool_call_id)}.{suffix}"
     if not path.exists():
         if suffix == "json" and isinstance(content, list):
-            _write_text_atomic(path, json.dumps(content, ensure_ascii=False, indent=2))
+            _write_text_atomic(path, json.dumps(content, ensure_ascii=False, indent=2), fsync=False)
         else:
-            _write_text_atomic(path, text_payload)
+            _write_text_atomic(path, text_payload, fsync=False)
 
     preview = text_payload[:_TOOL_RESULT_PREVIEW_CHARS]
     return _render_tool_result_reference(

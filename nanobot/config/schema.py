@@ -130,6 +130,14 @@ class AgentDefaults(Base):
     max_tool_iterations: int = 200
     max_concurrent_subagents: int = Field(default=4, ge=1)
     max_tool_result_chars: int = 16_000
+    tool_results_dir: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("toolResultsDir", "tool_results_dir"),
+        serialization_alias="toolResultsDir",
+    )  # Where oversized tool results are offloaded. Defaults to a fast local
+    # cache dir (~/.cache/nanobot/tool-results). Set to a workspace-relative
+    # path (e.g. ".nanobot/tool-results") to keep files next to the workspace
+    # at the cost of slower writes on mounted drives.
     provider_retry_mode: Literal["standard", "persistent"] = "standard"
     tool_hint_max_length: int = Field(
         default=40,

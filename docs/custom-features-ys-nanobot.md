@@ -1,6 +1,6 @@
 # Custom Features — YS Nanobot (Technical Reference)
 
-This document is the authoritative technical reference for the three custom
+This document is the authoritative technical reference for the four custom
 features implemented on the `ys-nanobot/improvements` branch. It exists for
 one purpose: **make every future merge/rebase from upstream `main` predictable
 and painless** — you should never have to reverse-engineer a conflict, wonder
@@ -32,11 +32,13 @@ origin/main (upstream, HKUDS/nanobot)
         └── ce741ce6 Apply CLI monitor to agent.py
         └── be5e1b74 Add /pack-summarize ...
         └── 21fdb386 docs: merge-safety reference
+        └── perf(tools): cut per-tool-call disk latency   ← Feature 4 (perf)
              = fork/ys-nanobot/improvements  ← current HEAD (ys-nanobot/improvements)
 ```
 
 - The canonical home of these features is the **fork remote** branch
-  `fork/ys-nanobot/improvements` — it is exactly `latest-main + 6 feature commits`.
+  `fork/ys-nanobot/improvements` — it is exactly `latest-main + 7 feature
+  commits` (6 original + the perf feature).
 - The local `ys-nanobot/improvements` branch **fast-forwards** onto it (a pure
   fast-forward; never a divergent merge). If they ever diverge, the fork branch
   wins and the local branch should be reset to it.
@@ -156,7 +158,7 @@ only signature change needed; the `session_key` parameter of
 3. If the model-status code changed: re-add the `if session_key and ":" in
    session_key:` block, keeping `insert(1, ...)` so the Channel line renders
    right after the "## Model" header.
-4. Verify with the checklist in §7 (commands) and the merge guard:
+4. Verify with the checklist in §6 (commands) and the merge guard:
 
 ```
 Search for _load_channel_prompt in nanobot/agent/context.py.
@@ -313,7 +315,7 @@ PackManager` — if upstream changes `session/__init__.py` exports, preserve the
 4. **`/status` block:** the `pack_section` block is wrapped in
    `with suppress(Exception):` so a resolution mismatch degrades to no-op rather
    than crashing `/status`. Keep that pattern.
-5. Verify with §7 + merge guard:
+5. Verify with §6 + merge guard:
 
 ```
 After rebase, verify:
@@ -423,7 +425,153 @@ if the user had typed it.
 
 ---
 
-## 4. Step-by-Step Merge Procedure (from `main`)
+## Feature 4: Tool-Call Performance (per-tool disk latency)
+
+**Status:** Merged into `ys-nanobot/improvements` (commit
+`perf(tools): cut per-tool-call disk latency` — current HEAD of the branch)
+
+### 4.1 Motivation & design
+
+When the agent workspace (or the config dir holding sessions) sits on a slow
+mount (e.g. a network/HDD drive), **every tool call** pays fixed disk costs
+that stall the event loop for tens to hundreds of ms:
+
+1. **Tool-result offload writes** — any result > `max_tool_result_chars`
+   (default 16,000) is written to `{workspace}/.nanobot/tool-results/` via
+   `_write_text_atomic()`, which does **file fsync + directory fsync**.
+   Measured on a slow mount: **~46–54 ms per write** (vs 0.04 ms on `/tmp`).
+2. **Runtime-checkpoint sidecars** — the runner emits **two checkpoints per
+   tool batch** (`awaiting_tools` + `tools_completed`), each synchronously
+   serializing the whole transcript state and writing it next to the session
+   file **on the event loop** (grows quadratically with transcript size).
+
+Three fixes, all behavior-preserving for normal (fast-disk) setups:
+
+1. **No-fsync offload writes** — regenerable cache files skip fsync.
+2. **Fast local dirs** — tool-results and runtime-checkpoint sidecars can be
+   redirected to `~/.cache/nanobot/...` (config knob + automatic default).
+3. **Coalesced, off-loop checkpoint writes** — checkpoints are captured
+   synchronously but written via `asyncio.to_thread` with per-session
+   coalescing (identical payloads skipped), so the event loop never blocks.
+
+### 4.2 Exact code contracts
+
+**`nanobot/utils/helpers.py`:**
+
+```python
+def _write_text_atomic(path: Path, content: str, *, fsync: bool = True) -> None:
+    # fsync=False skips file + directory fsync (regenerable caches only)
+
+def maybe_persist_tool_result(
+    workspace: Path | None,
+    session_key: str | None,
+    tool_call_id: str,
+    content: Any,
+    *,
+    max_chars: int,
+    results_dir: Path | None = None,   # NEW: overrides {workspace}/.nanobot/tool-results
+) -> Any
+```
+
+**`nanobot/config/schema.py` — `AgentDefaults`:**
+
+```python
+tool_results_dir: str | None = Field(
+    default=None,
+    validation_alias=AliasChoices("toolResultsDir", "tool_results_dir"),
+    serialization_alias="toolResultsDir",
+)  # None = workspace default; relative paths resolve against the workspace
+```
+
+**`nanobot/agent/context_governance.py` / `nanobot/agent/runner.py`:**
+
+- `ContextGovernanceConfig.tool_results_dir: Path | None = None` — passed to
+  `maybe_persist_tool_result(results_dir=...)`.
+- `AgentRunSpec.tool_results_dir: Path | None = None` — threaded into
+  `ContextGovernanceConfig` in `AgentRunner.run()`.
+
+**`nanobot/agent/loop.py`:**
+
+```python
+def _runtime_checkpoint_cache_dir() -> Path | None:
+    # ~/.cache/nanobot/runtime-checkpoints (falls back to /tmp, then None)
+    # passed as SessionManager(checkpoint_dir=...) in create_loop()
+
+def _schedule_checkpoint_write(self, session: Session) -> None:
+    # Called from _set_runtime_checkpoint(). Captures (payload, provider_state)
+    # synchronously, coalesces per-session by token, then:
+    #   loop.create_task(asyncio.to_thread(_write))
+    # where _write() calls sessions.save_runtime_checkpoint_snapshot(...)
+```
+
+**`nanobot/session/manager.py`:**
+
+```python
+class JsonlSessionStore:
+    def __init__(self, workspace, *, sessions_root=None, checkpoint_dir=None):
+        ...
+        self._checkpoint_dir = ...  # None → checkpoints next to session files
+    def get_runtime_checkpoint_path(self, key):  # uses _checkpoint_dir if set
+    def save_runtime_checkpoint_snapshot(self, session, *, payload, provider_state):
+        # writes a captured snapshot without reading the mutated session
+    def _write_checkpoint_unlocked(self, session, *, checkpoint, provider_state):
+        # shared write helper (caller holds _session_files_lock)
+
+class SessionManager:
+    def __init__(self, workspace, *, store=None, sessions_root=None, checkpoint_dir=None):
+    def save_runtime_checkpoint_snapshot(self, session, *, payload, provider_state):
+        # facade: policy.persist check → _jsonl_store delegation → _remember()
+```
+
+### 4.3 Integration points (only places conflicts can occur)
+
+| File | Location | What conflicts |
+|------|----------|----------------|
+| `nanobot/utils/helpers.py` | `_write_text_atomic`, `maybe_persist_tool_result` | Upstream changes to atomic-write or offload signatures |
+| `nanobot/config/schema.py` | `AgentDefaults` | Upstream adds new default fields |
+| `nanobot/agent/context_governance.py` | `ContextGovernanceConfig` | Upstream dataclass churn |
+| `nanobot/agent/runner.py` | `AgentRunSpec` + `run()` | Upstream spec/runner refactors |
+| `nanobot/agent/loop.py` | `_set_runtime_checkpoint`, `create_loop()` SessionManager construction | **Hot zone** — upstream checkpoint/recovery refactors |
+| `nanobot/session/manager.py` | `JsonlSessionStore.__init__`, `SessionManager.__init__`, checkpoint writers | Upstream session-store churn |
+
+### 4.4 Merge risk
+
+- **Medium–High** for `loop.py` and `session/manager.py`: upstream is actively
+  refactoring checkpoint/recovery plumbing (this feature was authored right
+  after the "make run usage explicit" refactor that removed `loop._last_usage`).
+- **Low** for the rest: the schema field, dataclass fields, and `fsync` kwarg
+  are purely additive.
+
+### 4.5 Conflict-resolution playbook
+
+1. **`_write_text_atomic`**: if upstream rewrote it, re-add the
+   `fsync: bool = True` keyword and the two `fsync=False` calls inside
+   `maybe_persist_tool_result`. If `maybe_persist_tool_result` changed, keep
+   the `results_dir` kwarg and
+   `ensure_dir(results_dir if results_dir is not None else workspace / _TOOL_RESULTS_DIR)`.
+2. **Dataclass plumbing**: keep `tool_results_dir` on `AgentRunSpec` **and**
+   `ContextGovernanceConfig`, plus the two pass-throughs (`AgentRunSpec →
+   ContextGovernanceConfig` in `run()`; `ContextGovernanceConfig →
+   maybe_persist_tool_result` in `normalize_tool_result()`).
+3. **`_schedule_checkpoint_write`** is the block upstream churn most likely to
+   displace. If `_set_runtime_checkpoint` changed, re-add the coalescing writer
+   verbatim (capture → token → `asyncio.to_thread` → snapshot write).
+4. **Session store**: keep `checkpoint_dir` on both `JsonlSessionStore` and
+   `SessionManager.__init__`, and the `_checkpoint_dir` branch in
+   `get_runtime_checkpoint_path()`. Keep `save_runtime_checkpoint_snapshot` on
+   both classes (`_write_checkpoint_unlocked` is the shared writer).
+5. Verify with the checklist in §6 (commands) and the merge guard:
+
+```
+Search for _schedule_checkpoint_write in nanobot/agent/loop.py and
+save_runtime_checkpoint_snapshot in nanobot/session/manager.py.
+If missing → re-add both (the coalescing writer + the snapshot facade).
+Also confirm _runtime_checkpoint_cache_dir() is used in create_loop().
+```
+
+---
+
+## 5. Step-by-Step Merge Procedure (from `main`)
 
 Run this exact sequence every time. It is designed so that even a chaotic
 upstream merge cannot silently drop a feature.
@@ -442,7 +590,7 @@ git merge-base --is-ancestor origin/main HEAD && echo "main fully merged" || ech
 # 3. If upstream has new commits, merge it
 git merge origin/main           # resolve conflicts using the per-feature playbooks above
 
-# 4. Re-apply features if anything was lost (see §5 checklist); then ensure
+# 4. Re-apply features if anything was lost (see §6 checklist); then ensure
 #    the feature commits are still reachable
 git log --oneline HEAD..fork/ys-nanobot/improvements   # should be empty → features intact
 ```
@@ -457,7 +605,7 @@ git merge --ff-only fork/ys-nanobot/improvements
 (`git push --force-with-lease`, never `--force`). Do **not** rewrite the local
 `main` / `origin/main`.
 
-## 5. Quick Conflict Checklist
+## 6. Quick Conflict Checklist
 
 After any merge/rebase, confirm every row:
 
@@ -474,8 +622,12 @@ After any merge/rebase, confirm every row:
 | `session/pack_manager.py` | `nanobot/session/pack_manager.py` | Pack CRUD |
 | `command/pack_cmds.py` | `nanobot/command/pack_cmds.py` | Pack commands |
 | `session/__init__.py` exports | `nanobot/session/__init__.py` (lines 4–8) | Public API surface |
+| `_write_text_atomic` `fsync` kwarg + `results_dir` | `nanobot/utils/helpers.py` | Perf: no-fsync offload |
+| `toolResultsDir` config | `nanobot/config/schema.py` `AgentDefaults` | Perf: fast local offload dir |
+| `_schedule_checkpoint_write` + `_runtime_checkpoint_cache_dir` | `nanobot/agent/loop.py` | Perf: coalesced off-loop checkpoints |
+| `save_runtime_checkpoint_snapshot` + `checkpoint_dir` | `nanobot/session/manager.py` | Perf: snapshot writer + fast checkpoint dir |
 
-## 6. Post-Merge Verification (commands)
+## 7. Post-Merge Verification (commands)
 
 ```bash
 # AST parse all feature-touched files (fast smoke test)
@@ -486,6 +638,9 @@ files = [
     "nanobot/cli/input_monitor.py", "nanobot/command/builtin.py",
     "nanobot/command/pack_cmds.py", "nanobot/session/__init__.py",
     "nanobot/session/pack.py", "nanobot/session/pack_manager.py",
+    "nanobot/utils/helpers.py", "nanobot/session/manager.py",
+    "nanobot/agent/context_governance.py", "nanobot/agent/runner.py",
+    "nanobot/agent/loop.py", "nanobot/config/schema.py",
 ]
 for f in files:
     ast.parse(open(f).read())
@@ -497,7 +652,9 @@ uv run --no-sync python -c \
   "from nanobot.session.pack import SessionPackKey, parse_session_key; \
    from nanobot.session.pack_manager import PackManager; \
    from nanobot.cli.input_monitor import watch_control_keys; \
-   from nanobot.agent.context import ContextBuilder; print('imports OK')"
+   from nanobot.agent.context import ContextBuilder; \
+   from nanobot.session.manager import SessionManager; \
+   from nanobot.utils.helpers import _write_text_atomic, maybe_persist_tool_result; print('imports OK')"
 
 # Full gate (matches CI): lint + strict type check
 ruff check nanobot/
@@ -505,6 +662,9 @@ uv run --no-sync basedpyright
 
 # Functional smoke (manual): nanobot agent → during a long turn press
 # Escape (turn cancels, app stays) and Ctrl+C (clean "Goodbye!" exit).
+# Perf sanity: a large tool result (>16k chars) should not stall the loop;
+# check that {workspace}/.nanobot/tool-results or the configured
+# toolResultsDir receives the offload file with no fsync delay.
 ```
 
 ---

@@ -655,7 +655,7 @@ class SessionStore(Protocol):
 class JsonlSessionStore:
     """JSONL implementation of session persistence."""
 
-    def __init__(self, workspace: Path, *, sessions_root: Path | None = None):
+    def __init__(self, workspace: Path, *, sessions_root: Path | None = None, checkpoint_dir: Path | None = None):
         canonical_workspace = Path(workspace).expanduser().resolve(strict=False)
         ensure_dir(canonical_workspace)
         root = (
@@ -671,6 +671,11 @@ class JsonlSessionStore:
         ensure_dir(root)
         with suppress(OSError):
             os.chmod(root, 0o700)
+        self._checkpoint_dir = (
+            Path(checkpoint_dir).expanduser().resolve(strict=False)
+            if checkpoint_dir is not None
+            else None
+        )
         self.workspace = canonical_workspace
         self._migration_lock = FileLock(
             str(root / ".workspace-migration.lock"),
@@ -1134,7 +1139,11 @@ class JsonlSessionStore:
         return self.sessions_dir / f"{self.storage_key(key)}.jsonl"
 
     def get_runtime_checkpoint_path(self, key: str) -> Path:
-        return self.sessions_dir / f"{self.storage_key(key)}{_RUNTIME_CHECKPOINT_SUFFIX}"
+        # Runtime checkpoints are volatile in-flight state: keep them on a
+        # fast local dir when configured (slow-mounted workspaces otherwise
+        # stall the event loop on every tool batch).
+        base = self._checkpoint_dir if self._checkpoint_dir is not None else self.sessions_dir
+        return base / f"{self.storage_key(key)}{_RUNTIME_CHECKPOINT_SUFFIX}"
 
     def get_legacy_lossy_path(self, key: str) -> Path:
         return self.sessions_dir / f"{safe_filename(key.replace(':', '_'))}.jsonl"
@@ -1339,32 +1348,69 @@ class JsonlSessionStore:
                 self.get_runtime_checkpoint_path(session.key).unlink(missing_ok=True)
                 return
 
-            payload: dict[str, Any] = {
-                "version": _RUNTIME_CHECKPOINT_VERSION,
-                "session_key": session.key,
-                "base_updated_at": session.updated_at.isoformat(),
-                "base_message_count": len(session.messages),
-                "checkpoint": checkpoint,
-                "provider_state": (
-                    session.provider_state.to_private_record()
-                    if session.provider_state is not None
-                    else None
-                ),
-            }
-            target = self.get_runtime_checkpoint_path(session.key)
-            tmp = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
-            try:
-                with open(tmp, "x", encoding="utf-8") as handle:
-                    os.chmod(tmp, 0o600)
-                    json.dump(
-                        payload,
-                        handle,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                os.replace(tmp, target)
-            finally:
-                tmp.unlink(missing_ok=True)
+            self._write_checkpoint_unlocked(
+                session,
+                checkpoint=checkpoint,
+                provider_state=session.provider_state,
+            )
+
+    def save_runtime_checkpoint_snapshot(
+        self,
+        session: Session,
+        *,
+        payload: dict[str, Any],
+        provider_state: ProviderConversationState | None,
+    ) -> None:
+        """Atomically persist a captured checkpoint snapshot.
+
+        Used by the coalescing background writer: ``payload`` and
+        ``provider_state`` were captured synchronously on the event loop, so the
+        worker thread never reads a mutated session.
+        """
+        with self._session_files_lock:
+            path = self.get_session_path(session.key)
+            if not path.exists():
+                return
+            self._write_checkpoint_unlocked(
+                session,
+                checkpoint=payload,
+                provider_state=provider_state,
+            )
+
+    def _write_checkpoint_unlocked(
+        self,
+        session: Session,
+        *,
+        checkpoint: dict[str, Any],
+        provider_state: ProviderConversationState | None,
+    ) -> None:
+        """Write the checkpoint sidecar (caller must hold ``_session_files_lock``)."""
+        payload: dict[str, Any] = {
+            "version": _RUNTIME_CHECKPOINT_VERSION,
+            "session_key": session.key,
+            "base_updated_at": session.updated_at.isoformat(),
+            "base_message_count": len(session.messages),
+            "checkpoint": checkpoint,
+            "provider_state": (
+                provider_state.to_private_record()
+                if provider_state is not None
+                else None
+            ),
+        }
+        target = self.get_runtime_checkpoint_path(session.key)
+        tmp = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
+        try:
+            with open(tmp, "x", encoding="utf-8") as handle:
+                os.chmod(tmp, 0o600)
+                json.dump(
+                    payload,
+                    handle,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            os.replace(tmp, target)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def _overlay_runtime_checkpoint_unlocked(self, session: Session, main_path: Path) -> None:
         checkpoint_path = self.get_runtime_checkpoint_path(session.key)
@@ -1757,9 +1803,14 @@ class SessionManager:
         *,
         store: SessionStore | None = None,
         sessions_root: Path | None = None,
+        checkpoint_dir: Path | None = None,
     ):
         self.workspace = workspace
-        self._jsonl_store = JsonlSessionStore(workspace, sessions_root=sessions_root)
+        self._jsonl_store = JsonlSessionStore(
+            workspace,
+            sessions_root=sessions_root,
+            checkpoint_dir=checkpoint_dir,
+        )
         self._store: SessionStore = store if store is not None else self._jsonl_store
         self.sessions_dir = self._jsonl_store.sessions_dir
         self.legacy_sessions_dir = self._jsonl_store.legacy_sessions_dir
@@ -1909,6 +1960,24 @@ class SessionManager:
         # Third-party stores keep their existing all-or-nothing semantics until
         # they opt into a dedicated checkpoint primitive.
         self.save(session)
+
+    def save_runtime_checkpoint_snapshot(
+        self,
+        session: Session,
+        *,
+        payload: dict[str, Any],
+        provider_state: ProviderConversationState | None,
+    ) -> None:
+        """Persist a captured checkpoint snapshot (coalescing writer path)."""
+        if not session.policy.persist:
+            return
+        if self._store is self._jsonl_store:
+            self._jsonl_store.save_runtime_checkpoint_snapshot(
+                session,
+                payload=payload,
+                provider_state=provider_state,
+            )
+            self._remember(session)
 
     def rename_model_preset(self, old_name: str, new_name: str) -> int:
         """Rename a session-scoped model preset across durable and live sessions."""

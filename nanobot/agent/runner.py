@@ -99,6 +99,7 @@ class AgentRunSpec:
     runtime: LLMRuntime
     max_iterations: int
     max_tool_result_chars: int
+    tool_results_dir: Path | None = None
     hook: AgentHook | None = None
     error_message: str | None = _DEFAULT_ERROR_MESSAGE
     max_iterations_message: str | None = None
@@ -503,6 +504,7 @@ class AgentRunner:
             context_block_limit=spec.context_block_limit,
             max_tokens=spec.runtime.generation.max_tokens,
             inflight_start_index=len(spec.initial_messages),
+            tool_results_dir=spec.tool_results_dir,
         )
 
         for iteration in range(spec.max_iterations):
