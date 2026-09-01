@@ -14,6 +14,7 @@ from collections.abc import Coroutine, Iterable, Mapping
 from contextlib import AbstractContextManager, ExitStack, nullcontext, suppress
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar, cast
 
@@ -23,7 +24,7 @@ from nanobot.agent import context as agent_context
 from nanobot.agent import model_presets as preset_helpers
 from nanobot.agent.autocompact import AutoCompact
 from nanobot.agent.automation_turns import publish_next_deferred_turn
-from nanobot.agent.context import ContextBuilder, PersistedPromptContextResolver
+from nanobot.agent.context import ContextBuilder, PersistedPromptContextResolver, TranscriptInput
 from nanobot.agent.cron_turns import CronTurnCoordinator
 from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
 from nanobot.agent.memory import Consolidator
@@ -156,7 +157,7 @@ class TurnContext:
     session: Session | None = None
 
     history: list[dict[str, Any]] = field(default_factory=list)
-    initial_messages: list[dict[str, Any]] = field(default_factory=list)
+    transcript_input: TranscriptInput | None = None
     provider_state: ProviderConversationState | None = field(default=None, repr=False)
     request_context: RequestContext | None = None
     runtime_context_blocks: list[RuntimeContextBlock] = field(default_factory=list)
@@ -475,7 +476,6 @@ class AgentLoop:
                 workspace_scopes=self.workspace_scopes,
                 unified_session=unified_session,
             ),
-            unified_session=unified_session,
         )
         self.auto_compact = AutoCompact(
             sessions=self.sessions,
@@ -756,22 +756,15 @@ class AgentLoop:
             return True
         return False
 
-    def _build_initial_messages(self, ctx: TurnContext) -> list[dict[str, Any]]:
-        """Build the initial message list for the LLM turn."""
+    def _build_transcript_input(self, ctx: TurnContext) -> TranscriptInput:
+        """Capture the persisted history and fresh input as separate transcript parts."""
         assert ctx.session is not None
-        scope = self.workspace_scopes.for_message(ctx.msg, ctx.session.metadata)
-        return self.context.build_messages(
+        return TranscriptInput(
             history=ctx.history,
             current_message=ctx.msg.content,
             media=ctx.msg.media if ctx.kind is TurnKind.USER and ctx.msg.media else None,
-            channel=ctx.delivery.route.channel,
             session_summary=ctx.pending_summary,
-            workspace=scope.project_path,
             runtime_context_blocks=ctx.runtime_context_blocks,
-            include_memory=ctx.session.policy.persist,
-            include_memory_recent_history=not ctx.ephemeral,
-            session_key=ctx.session.key,
-            unified_session=self._unified_session,
         )
 
     def _request_context_for_turn(self, ctx: TurnContext) -> RequestContext:
@@ -892,6 +885,22 @@ class AgentLoop:
             metadata={**metadata, "render_as": "text"},
         )
 
+    def _track_active_task(self, key: str, task: asyncio.Task[Any]) -> None:
+        """Track active session work until its task group becomes empty."""
+        tasks = self._active_tasks.setdefault(key, set())
+        tasks.add(task)
+        task.add_done_callback(partial(self._active_task_done, key, tasks))
+
+    def _active_task_done(
+        self,
+        key: str,
+        tasks: set[asyncio.Task[Any]],
+        task: asyncio.Task[Any],
+    ) -> None:
+        tasks.discard(task)
+        if not tasks and self._active_tasks.get(key) is tasks:
+            self._active_tasks.pop(key, None)
+
     async def _cancel_active_tasks(self, key: str) -> int:
         """Cancel and await all active work for *key*.
 
@@ -962,7 +971,7 @@ class AgentLoop:
 
     async def _run_agent_loop(
         self,
-        initial_messages: list[dict[str, Any]],
+        transcript_input: TranscriptInput,
         on_progress: Callable[..., Awaitable[None]] | None = None,
         on_stream: Callable[[str], Awaitable[None]] | None = None,
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
@@ -1143,6 +1152,12 @@ class AgentLoop:
             message_metadata=request_metadata,
             session_metadata=session.metadata if session is not None else None,
         )
+        transcript_builder = partial(
+            self.context.build_transcript,
+            channel=request_ctx.channel,
+            workspace=effective_scope.project_path,
+            include_memory=session.policy.persist if session is not None else True,
+        )
         if request_context is None:
             request_ctx = dataclasses.replace(
                 request_ctx,
@@ -1189,12 +1204,14 @@ class AgentLoop:
                 run_extra_hooks_for_ephemeral=run_extra_hooks_for_ephemeral,
             ))
             result = await self.runner.run(AgentRunSpec(
-                initial_messages=initial_messages,
+                initial_messages=None,
                 tools=effective_tools,
                 runtime=runtime,
                 max_iterations=self.max_iterations,
                 max_tool_result_chars=self.max_tool_result_chars,
                 tool_results_dir=self.tool_results_dir,
+                transcript_input=transcript_input,
+                transcript_builder=transcript_builder,
                 hook=hook,
                 concurrent_tools=True,
                 workspace=effective_scope.project_path,
@@ -1383,12 +1400,7 @@ class AgentLoop:
                 # Compute the effective session key before dispatching
                 # This ensures /stop command can find tasks correctly when unified session is enabled
                 task = asyncio.create_task(self._dispatch(msg))
-                active_tasks: set[asyncio.Task[Any]] = self._active_tasks.setdefault(
-                    effective_key,
-                    set(),
-                )
-                active_tasks.add(task)
-                task.add_done_callback(active_tasks.discard)
+                self._track_active_task(effective_key, task)
         finally:
             await self.aclose()
 
@@ -1912,6 +1924,13 @@ class AgentLoop:
                 session,
                 runtime=runtime,
             )
+            # Token consolidation may have committed a replacement checkpoint
+            # after the compact stage captured its summary for this request.
+            ctx.session, ctx.pending_summary = self.auto_compact.prepare_session(
+                session,
+                ctx.session_key,
+            )
+            session = ctx.require_session()
         is_subagent = ctx.kind is TurnKind.SYSTEM and ctx.msg.sender_id == "subagent"
 
         _hist_kwargs: dict[str, Any] = {
@@ -2002,7 +2021,7 @@ class AgentLoop:
             # Upgrade the replay-safe baseline to the resumable state before
             # prompt assembly and the first model checkpoint.
             self.sessions.save(session)
-        ctx.initial_messages = self._build_initial_messages(ctx)
+        ctx.transcript_input = self._build_transcript_input(ctx)
 
         if ctx.on_progress is None:
             ctx.on_progress = ctx.delivery.progress_callback()
@@ -2014,9 +2033,10 @@ class AgentLoop:
         if ctx.visible_run_started_at is None:
             ctx.visible_run_started_at = time.time()
         await ctx.delivery.running(started_at=ctx.visible_run_started_at)
+        assert ctx.transcript_input is not None
         with capture_message_deliveries() as message_sends:
             result = await self._run_agent_loop(
-                ctx.initial_messages,
+                ctx.transcript_input,
                 runtime=runtime,
                 on_progress=ctx.on_progress,
                 on_stream=ctx.on_stream,
