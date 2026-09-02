@@ -257,7 +257,7 @@ class ContextBuilder:
     def build_messages(
         self,
         history: list[dict[str, Any]],
-        current_message: str,
+        current_message: str | None,
         *,
         media: list[str] | None = None,
         channel: str | None = None,
@@ -281,6 +281,8 @@ class ContextBuilder:
             workspace=workspace,
             include_memory=include_memory,
         )
+        if current_message is None:
+            return messages
         current = messages[-1]
         if len(messages) < 2 or messages[-2].get("role") != current.get("role"):
             return messages
