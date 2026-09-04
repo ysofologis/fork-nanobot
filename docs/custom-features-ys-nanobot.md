@@ -33,12 +33,13 @@ origin/main (upstream, HKUDS/nanobot)
         └── be5e1b74 Add /pack-summarize ...
         └── 21fdb386 docs: merge-safety reference
         └── perf(tools): cut per-tool-call disk latency   ← Feature 4 (perf)
+        └── feat(prompt): add /prompt launcher + /prompt-list   ← Feature 5 (new)
              = fork/ys-nanobot/improvements  ← current HEAD (ys-nanobot/improvements)
 ```
 
 - The canonical home of these features is the **fork remote** branch
-  `fork/ys-nanobot/improvements` — it is exactly `latest-main + 7 feature
-  commits` (6 original + the perf feature).
+  `fork/ys-nanobot/improvements` — it is exactly `latest-main + 8 feature
+  commits` (7 original + the prompt launcher feature).
 - The local `ys-nanobot/improvements` branch **fast-forwards** onto it (a pure
   fast-forward; never a divergent merge). If they ever diverge, the fork branch
   wins and the local branch should be reset to it.
@@ -571,6 +572,108 @@ Also confirm _runtime_checkpoint_cache_dir() is used in create_loop().
 
 ---
 
+## Feature 5: Prompt Launcher — `/prompt <name>` + `/prompt-list`
+
+**Status:** New on `ys-nanobot/improvements` (not yet upstream).
+
+### 5.1 Motivation & design
+
+The agent workspace may hold reusable prompt snippets under
+`{workspace}/prompts/` (the same folder that hosts `dream.md` and
+`evaluator.md` overrides). This feature lets a user launch any of them as a
+full agent turn:
+
+- `/prompt <name> [extra text...]` loads `{workspace}/prompts/<name>.md` and
+  replaces the inbound message content with the prompt body, appending any
+  trailing user text. The command handler returns `None`, so the turn proceeds
+  through the normal agent pipeline (`_build_turn` → `_run_turn`) exactly like
+  `/goal` does.
+- `/prompt-list` lists every non-empty `.md` file under `prompts/` that is not
+  an internal override (`dream`, `evaluator`) and not inside the
+  `system_prompts/` subdirectory (used by Feature 1).
+
+The loaded prompt body is what flows to the LLM **and** what gets persisted as
+history (matching `/goal`'s behavior), not the raw `/prompt ...` text.
+
+### 5.2 Exact code contracts
+
+**`nanobot/command/prompt_cmds.py` (new, ~180 lines):**
+
+```python
+async def cmd_prompt(ctx: CommandContext) -> OutboundMessage | None:
+    """``/prompt <name> [extra text...]`` — launch a saved prompt as an agent turn."""
+    # - resolves workspace via ctx.loop.workspace (falls back to ctx.loop.context.workspace)
+    # - loads prompts/<name>.md via load_workspace_prompt_override()
+    # - rejects names containing '/' or '\\' (path traversal guard)
+    # - sets ctx.msg.metadata['prompt_launched'] = name
+    # - sets ctx.msg.content = prompt_body (+ '\n\n' + extra if provided)
+    # - returns None → normal agent turn proceeds with the loaded prompt
+
+async def cmd_prompt_list(ctx: CommandContext) -> OutboundMessage:
+    """``/prompt-list`` — list all launchable prompts under prompts/."""
+    # - skips empty files, internal overrides (dream/evaluator), system_prompts/
+    # - one line per prompt: `name` (N chars) — first line preview
+
+_NON_LAUNCHABLE_PROMPTS = {"dream", "evaluator"}
+_NON_LAUNCHABLE_SUBDIRS = {"system_prompts"}
+```
+
+**`nanobot/command/builtin.py` — registration & specs:**
+
+```python
+# In BUILTIN_COMMAND_SPECS (before the /pack specs):
+BuiltinCommandSpec(
+    "/prompt", "Launch prompt",
+    "Launch a saved prompt from prompts/<name>.md as an agent turn.",
+    "sparkles", "<name> [extra text...]",
+    lifecycle="agent_turn_with_args", accepts_args=True,
+),
+BuiltinCommandSpec(
+    "/prompt-list", "List prompts",
+    "List all launchable prompts under the workspace prompts folder.",
+    "list",
+),
+
+# In register_builtin_commands() (right before the pack block):
+from nanobot.command.prompt_cmds import cmd_prompt, cmd_prompt_list
+router.prefix("/prompt ", cmd_prompt)
+router.exact("/prompt", cmd_prompt)
+router.exact("/prompt-list", cmd_prompt_list)
+```
+
+`lifecycle="agent_turn_with_args"` makes WebUI treat `/prompt <name>` as a
+normal agent turn (same as `/goal`), while bare `/prompt` stays side-channel.
+
+### 5.3 Integration points (only places conflicts can occur)
+
+| File | Location | What conflicts |
+|------|----------|----------------|
+| `nanobot/command/builtin.py` | `BUILTIN_COMMAND_SPECS` + `register_builtin_commands()` | Upstream command additions/churn |
+| `nanobot/utils/workspace_prompts.py` | `load_workspace_prompt_override` signature | Upstream changes to prompt-override loading |
+| `nanobot/command/router.py` | none (pure consumer) | — |
+
+### 5.4 Merge risk
+
+- **Low.** New self-contained module; only two touch points in `builtin.py`.
+- The `prompt_cmds.py` module never conflicts with upstream (no counterpart).
+
+### 5.5 Conflict-resolution playbook
+
+1. If `register_builtin_commands()` changed, re-add the three router lines
+   (`/prompt ` prefix, `/prompt` exact, `/prompt-list` exact) — keep them right
+   before the session-pack block.
+2. If `BUILTIN_COMMAND_SPECS` churned, re-add the two specs verbatim.
+3. If `load_workspace_prompt_override` signature changed, adapt the call in
+   `cmd_prompt`/`cmd_prompt_list`.
+4. Verify with the checklist in §6:
+
+```
+Search for cmd_prompt in nanobot/command/prompt_cmds.py and
+nanobot/command/builtin.py. If missing → re-add the module and both specs.
+```
+
+---
+
 ## 5. Step-by-Step Merge Procedure (from `main`)
 
 Run this exact sequence every time. It is designed so that even a chaotic
@@ -626,6 +729,9 @@ After any merge/rebase, confirm every row:
 | `toolResultsDir` config | `nanobot/config/schema.py` `AgentDefaults` | Perf: fast local offload dir |
 | `_schedule_checkpoint_write` + `_runtime_checkpoint_cache_dir` | `nanobot/agent/loop.py` | Perf: coalesced off-loop checkpoints |
 | `save_runtime_checkpoint_snapshot` + `checkpoint_dir` | `nanobot/session/manager.py` | Perf: snapshot writer + fast checkpoint dir |
+| `prompt_cmds.py` | `nanobot/command/prompt_cmds.py` | Prompt launcher (`/prompt`, `/prompt-list`) |
+| Two `/prompt` + `/prompt-list` specs | `nanobot/command/builtin.py` `BUILTIN_COMMAND_SPECS` | Prompt launcher palette/help |
+| Three prompt router lines | `nanobot/command/builtin.py` `register_builtin_commands()` (before pack block) | Prompt launcher dispatch |
 
 ## 7. Post-Merge Verification (commands)
 
@@ -641,6 +747,7 @@ files = [
     "nanobot/utils/helpers.py", "nanobot/session/manager.py",
     "nanobot/agent/context_governance.py", "nanobot/agent/runner.py",
     "nanobot/agent/loop.py", "nanobot/config/schema.py",
+    "nanobot/command/prompt_cmds.py",
 ]
 for f in files:
     ast.parse(open(f).read())
@@ -654,7 +761,11 @@ uv run --no-sync python -c \
    from nanobot.cli.input_monitor import watch_control_keys; \
    from nanobot.agent.context import ContextBuilder; \
    from nanobot.session.manager import SessionManager; \
-   from nanobot.utils.helpers import _write_text_atomic, maybe_persist_tool_result; print('imports OK')"
+   from nanobot.utils.helpers import _write_text_atomic, maybe_persist_tool_result; \
+   from nanobot.command.prompt_cmds import cmd_prompt, cmd_prompt_list; print('imports OK')"
+
+# Command tests for the prompt launcher
+python3 -m pytest tests/command/test_prompt_commands.py -q
 
 # Full gate (matches CI): lint + strict type check
 ruff check nanobot/

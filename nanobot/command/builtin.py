@@ -173,6 +173,21 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "circle-help",
     ),
     BuiltinCommandSpec(
+        "/prompt",
+        "Launch prompt",
+        "Launch a saved prompt from prompts/<name>.md as an agent turn.",
+        "sparkles",
+        "<name> [extra text...]",
+        lifecycle="agent_turn_with_args",
+        accepts_args=True,
+    ),
+    BuiltinCommandSpec(
+        "/prompt-list",
+        "List prompts",
+        "List all launchable prompts under the workspace prompts folder.",
+        "list",
+    ),
+    BuiltinCommandSpec(
         "/pack",
         "Session pack",
         "Create or switch to a topic-based session pack.",
@@ -1142,6 +1157,11 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.prefix("/pairing ", cmd_pairing)
     router.exact(USER_SHELL_COMMAND, cmd_user_shell)
     router.prefix(f"{USER_SHELL_COMMAND} ", cmd_user_shell)
+    # Prompt launcher commands (lazy import to avoid circular dependencies)
+    from nanobot.command.prompt_cmds import cmd_prompt, cmd_prompt_list
+    router.prefix("/prompt ", cmd_prompt)
+    router.exact("/prompt", cmd_prompt)
+    router.exact("/prompt-list", cmd_prompt_list)
     # Session pack commands (lazy import to avoid circular dependencies)
     from nanobot.command.pack_cmds import cmd_pack, cmd_pack_list, cmd_pack_search, cmd_pack_summarize
     router.exact("/pack", cmd_pack)
