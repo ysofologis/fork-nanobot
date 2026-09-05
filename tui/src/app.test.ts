@@ -24,7 +24,7 @@ import type {
 } from "./protocol"
 import type { TuiHost } from "./host"
 import type { ClipboardImageReader } from "./clipboard-image"
-import { userMessageText, type Transcript } from "./transcript"
+import type { Transcript } from "./transcript"
 
 const options: AppOptions = {
   wsUrl: "ws://localhost.invalid/ws",
@@ -58,20 +58,6 @@ test("formats a reusable session ID after exit", () => {
   expect(sessionExitMessage("resume-chat")).toBe(
     "Resume with: nanobot agent --session websocket:resume-chat\n",
   )
-})
-
-test("projects image media as stable placeholders without exposing filenames", () => {
-  expect(userMessageText("What is this?", [
-    { name: "clipboard-image-2.png" },
-    { kind: "image", name: "screenshot.png" },
-    { kind: "file", name: "report.pdf" },
-  ])).toBe([
-    "What is this? [Image #2] [Image #1]",
-    "Attachments: report.pdf",
-  ].join("\n"))
-  expect(userMessageText("What is this?", [
-    { name: "clipboard-image-1.png" },
-  ], "What is this? [Image #1]")).toBe("What is this? [Image #1]")
 })
 
 function contrastRatio(foreground: string, background: string): number {
@@ -2878,6 +2864,136 @@ describe("NanobotTui layout", () => {
     expect(ui.status.plainText).not.toContain("attempt")
   })
 
+  test.each([
+    ["succeeded", "Conversation compacted"],
+    ["cancelled", "Conversation compaction cancelled"],
+  ] as const)("updates idle compaction in place to %s", async (phase, copy) => {
+    setup = await createRenderer({ width: 80, height: 24, screenMode: "alternate-screen" })
+    const app = mount(setup)
+    const ui = app as unknown as {
+      activeTurn: boolean
+      transcript: Transcript
+      composer: TextareaRenderable
+    }
+    ui.composer.setText("unfinished draft")
+    const event = { event: "context_compaction", chat_id: "chat", compaction_id: "idle" } as const
+    app.accept({ ...event, phase: "started" })
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("Compacting conversation…")
+    const rows = ui.transcript.root.getChildren()
+    app.accept({ ...event, phase })
+    app.accept({ ...event, phase })
+    app.accept({ ...event, phase: "started" })
+    app.accept({ ...event, chat_id: "another-chat", compaction_id: "other", phase: "failed" })
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame()
+    expect(occurrences(frame, copy)).toBe(1)
+    expect(frame).not.toContain("Compacting conversation")
+    expect(frame).not.toContain("Could not compact")
+    expect(ui.transcript.root.getChildren()).toEqual(rows)
+    expect(ui.activeTurn).toBe(false)
+    expect(ui.composer.plainText).toBe("unfinished draft")
+  })
+
+  test("keeps compaction separate from progress and streamed answers", async () => {
+    setup = await createRenderer({ width: 80, height: 30, screenMode: "alternate-screen" })
+    const app = mount(setup)
+    app.accept({ event: "delta", chat_id: "chat", text: "Answer before " })
+    app.accept({ event: "message", chat_id: "chat", text: "First step", kind: "progress" })
+    const event = { event: "context_compaction", chat_id: "chat", compaction_id: "capacity" } as const
+    app.accept({ ...event, phase: "started" })
+    app.accept({ event: "message", chat_id: "chat", text: "Second step", kind: "progress" })
+    app.accept({ ...event, phase: "succeeded" })
+    app.accept({ event: "delta", chat_id: "chat", text: "and after compaction" })
+    expect((app as unknown as { activeTurn: boolean }).activeTurn).toBe(true)
+    app.accept({ event: "stream_end", chat_id: "chat" })
+    app.accept({ event: "turn_end", chat_id: "chat" })
+    await setup.flush()
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Answer before and after compaction")
+    expect(frame.indexOf("First step")).toBeLessThan(frame.indexOf("Conversation compacted"))
+    expect(frame.indexOf("Conversation compacted")).toBeLessThan(frame.indexOf("Second step"))
+    expect(occurrences(frame, "Conversation compacted")).toBe(1)
+  })
+
+  test("preserves compaction rows through pagination, theming, and session reset", async () => {
+    setup = await createRenderer({ width: 80, height: 28, screenMode: "alternate-screen" })
+    const app = mount(setup)
+    const ui = app as unknown as {
+      transcript: Transcript
+      palette: { error: string }
+    }
+    ui.transcript.history([
+      { role: "activity", content: "", compaction: { id: "recent", phase: "succeeded" } },
+      { role: "assistant", content: "Recent answer" },
+    ])
+    await setup.flush()
+    await ui.transcript.prependHistory([
+      { role: "assistant", content: "Earlier answer" },
+      { role: "activity", content: "", compaction: { id: "older", phase: "failed" } },
+      { role: "activity", content: "", compaction: { id: "recent", phase: "started" } },
+    ])
+    await setup.flush()
+    ui.transcript.scrollToEdge("top")
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame()
+    expect(occurrences(frame, "Conversation compacted")).toBe(1)
+    expect(frame).not.toContain("Compacting conversation")
+    expect(frame).toContain("Earlier answer")
+    expect(frame.indexOf("Earlier answer")).toBeLessThan(frame.indexOf("Could not compact conversation"))
+    expect(frame).toContain("Recent answer")
+    expect(frame.indexOf("Could not compact conversation")).toBeLessThan(frame.indexOf("Recent answer"))
+    setup.renderer.emit(CliRenderEvents.THEME_MODE, "light")
+    await setup.flush()
+    const failure = ui.transcript.root.getChildren()
+      .flatMap((row) => row.getChildren())
+      .find((child) => child instanceof TextRenderable && child.plainText.includes("Could not compact"))
+    expect(failure).toBeInstanceOf(TextRenderable)
+    expect((failure as TextRenderable).fg.toInts().slice(0, 3)).toEqual([
+      1, 3, 5,
+    ].map((offset) => Number.parseInt(ui.palette.error.slice(offset, offset + 2), 16)))
+    ui.transcript.reset({ model: "model", workspace: "workspace", version: "test", access: "workspace" })
+    app.accept({ event: "context_compaction", chat_id: "chat", compaction_id: "recent", phase: "started" })
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("Compacting conversation…")
+    expect(setup.captureCharFrame()).not.toContain("Conversation compacted")
+  })
+
+  test("deduplicates compaction history against events queued during hydration", async () => {
+    setup = await createRenderer({ width: 80, height: 22, screenMode: "alternate-screen" })
+    const original = globalThis.fetch
+    let resolveFetch: (value: Response) => void = () => undefined
+    globalThis.fetch = (() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve
+    })) as unknown as typeof fetch
+    const app = NanobotTui.mount(
+      setup.renderer,
+      { ...options, apiUrl: "http://nanobot.test", apiToken: "token", chatId: "chat" },
+      client(),
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+    )
+    try {
+      app.accept({ event: "attached", chat_id: "chat" })
+      const event = { event: "context_compaction", chat_id: "chat", compaction_id: "idle" } as const
+      app.accept({ ...event, phase: "started" })
+      app.accept({ ...event, phase: "succeeded" })
+      resolveFetch(Response.json({
+        messages: [{
+          role: "assistant", kind: "compaction", content: "",
+          compaction: { id: "idle", phase: "succeeded" },
+        }],
+      }))
+      await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+      await setup.renderOnce()
+      const frame = setup.captureCharFrame()
+      expect(occurrences(frame, "Conversation compacted")).toBe(1)
+      expect(frame).not.toContain("Compacting conversation")
+      expect((app as unknown as { activeTurn: boolean }).activeTurn).toBe(false)
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
   test("replays events after asynchronous history hydration", async () => {
     setup = await createRenderer({ width: 80, height: 22, screenMode: "alternate-screen" })
     const original = globalThis.fetch
@@ -2981,6 +3097,8 @@ describe("NanobotTui layout", () => {
     const app = mount(setup, sent)
     const composer = (app as unknown as { composer: TextareaRenderable }).composer
     const connection = app as unknown as {
+      ready: boolean
+      submitPending: boolean
       handleStatus(
         status: "reconnecting" | "connected",
         detail?: string,
@@ -2989,7 +3107,7 @@ describe("NanobotTui layout", () => {
     }
 
     app.accept({ event: "attached", chat_id: "chat" })
-    await Bun.sleep(1)
+    await waitUntil(() => connection.ready)
     connection.handleStatus("reconnecting", "connection closed", {
       endpoint: "127.0.0.1:8769",
       attempt: 1,
@@ -2998,16 +3116,16 @@ describe("NanobotTui layout", () => {
     connection.handleStatus("connected")
     composer.setText("draft before attach")
     composer.submit()
-    await Bun.sleep(5)
+    await waitUntil(() => !connection.submitPending)
     composer.submit()
-    await Bun.sleep(5)
+    await waitUntil(() => !connection.submitPending)
 
     expect(sent).toEqual([])
     expect(composer.plainText).toBe("draft before attach")
 
     app.accept({ event: "attached", chat_id: "chat" })
     app.accept({ event: "attached", chat_id: "chat" })
-    await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+    await waitUntil(() => connection.ready)
     expect(sent).toEqual([])
     composer.submit()
     await waitUntil(() => sent.length === 1)
