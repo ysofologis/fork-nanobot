@@ -503,20 +503,24 @@ def stringify_text_blocks(content: list[object]) -> str | None:
 
 
 def _render_tool_result_reference(
-    filepath: Path,
+    reference_path: str,
     *,
     original_size: int,
     preview: str,
     truncated_preview: bool,
+    max_chars: int | None = None,
 ) -> str:
     result = (
         f"[tool output persisted]\n"
-        f"Full output saved to: {filepath}\n"
+        f"Full output saved to workspace path: {reference_path}\n"
         f"Original size: {original_size} chars\n"
         f"Preview:\n{preview}"
     )
     if truncated_preview:
-        result += "\n...\n(Read the saved file if you need the full output.)"
+        result += "\n...\nPreview is also truncated."
+    result += "\nResult truncated. Read the saved file if you need the complete output."
+    if max_chars and len(result) > max_chars:
+        result = f"[truncated: {reference_path}]"
     return result
 
 
@@ -624,10 +628,11 @@ def maybe_persist_tool_result(
 
     preview = text_payload[:_TOOL_RESULT_PREVIEW_CHARS]
     return _render_tool_result_reference(
-        path,
-        original_size=len(text_payload),
+        str(path),
+        original_size=len(content),
         preview=preview,
-        truncated_preview=len(text_payload) > _TOOL_RESULT_PREVIEW_CHARS,
+        truncated_preview=len(content) > _TOOL_RESULT_PREVIEW_CHARS,
+        max_chars=max_chars,
     )
 
 
