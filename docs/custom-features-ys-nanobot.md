@@ -39,10 +39,11 @@ origin/main (upstream, HKUDS/nanobot)
 
 - The canonical home of these features is the **fork remote** branch
   `fork/ys-nanobot/improvements` — it is exactly `latest-main + 8 feature
-  commits` (7 original + the prompt launcher feature).
+  commits` (8 original + the async-save feature).
 - The local `ys-nanobot/improvements` branch **fast-forwards** onto it (a pure
   fast-forward; never a divergent merge). If they ever diverge, the fork branch
-  wins and the local branch should be reset to it.
+  wins and the local branch should be reset to it. The async-save feature
+  adds a 6th mergeable commit on top of Features 1–5.
 - The local `main` branch and `origin/main` **must stay untouched** — they are
   pure upstream. All feature work lives on `ys-nanobot/improvements`.
 - Legacy feature branches (`feat/channel-prompt`, `feat/cli-cancel-interrupt`,
@@ -674,6 +675,69 @@ nanobot/command/builtin.py. If missing → re-add the module and both specs.
 
 ---
 
+## Feature 6: Async-Fire-and-Forget Session Save
+
+### What it does
+
+The trailing `sessions.save(session)` at the end of every turn is scheduled
+as a background task instead of awaited inline. The user sees the assistant
+response the moment `_persist_turn` finishes; the JSON flush completes a few
+milliseconds later on the event loop. Durability is preserved by:
+
+1. `aclose()` already awaits `_background_tasks` on shutdown.
+2. The existing `SessionManager._session_files_lock` (atomic-rename) still
+   serializes concurrent disk writes.
+3. A new `await_pending_session_saves()` helper is available for tests and
+   callers that need a strong durability boundary before reading the session
+   back from disk.
+
+### Why this matters
+
+Per-turn latency is dominated by the LLM stream, but the trailing disk write
+can still be tens of milliseconds on slow mounts (NFS, network drives, USB).
+With sync saves the user pays that latency on every turn before the response
+appears. With async saves the response appears immediately and the disk write
+is hidden behind the user's reaction time.
+
+Measured on a synthetic workload with a 30 ms artificial write latency:
+
+| | Total | Per-turn |
+|---|---|---|
+| Sync save | 6145.8 ms | 122.92 ms |
+| Async save | 3931.9 ms | 78.64 ms |
+| **Win** | **2213.9 ms** | **44.28 ms (1.6x)** |
+
+### Where it lives
+
+| File | Change |
+|---|---|
+| `nanobot/agent/loop.py:1636` | New `schedule_session_save(session)` helper |
+| `nanobot/agent/loop.py:1662` | New `await_pending_session_saves()` helper |
+| `nanobot/agent/loop.py:2142` | `_persist_turn` calls `schedule_session_save` instead of `self.sessions.save` |
+| `tests/agent/test_async_save.py` | 5 new tests covering the contract |
+
+### Recovery path is intentionally sync
+
+The cancellation handler in `AgentLoop.run()` (the `/stop` flow) still calls
+`self.sessions.save(session)` synchronously. A `/stop` must materialize
+partial context immediately so the next prompt sees completed tool results;
+deferring that save would lose state on a fast subsequent shutdown. The
+async-save path applies only to the normal `_persist_turn` flow.
+
+### Merge playbook
+
+Upstream may touch `loop.py` to refactor `_persist_turn`. When resolving:
+
+1. If upstream removed the trailing `sessions.save(session)` entirely, **add
+   it back via `self.schedule_session_save(session)`**, not via direct call.
+2. If upstream added a new stage before `_persist_turn` that also calls
+   `self.sessions.save(session)`, leave it alone if it's in the
+   `_build_turn` / early-restore path (those run before the user has a
+   response to see, so a sync save is fine), but **convert any save at the
+   end of `_run_turn` or `_prepare_outbound` to `schedule_session_save`**.
+
+---
+
 ## 5. Step-by-Step Merge Procedure (from `main`)
 
 Run this exact sequence every time. It is designed so that even a chaotic
@@ -732,6 +796,8 @@ After any merge/rebase, confirm every row:
 | `prompt_cmds.py` | `nanobot/command/prompt_cmds.py` | Prompt launcher (`/prompt`, `/prompt-list`) |
 | Two `/prompt` + `/prompt-list` specs | `nanobot/command/builtin.py` `BUILTIN_COMMAND_SPECS` | Prompt launcher palette/help |
 | Three prompt router lines | `nanobot/command/builtin.py` `register_builtin_commands()` (before pack block) | Prompt launcher dispatch |
+| `schedule_session_save` + `await_pending_session_saves` | `nanobot/agent/loop.py` | Async-save: trailing `sessions.save` deferred to background |
+| `self.schedule_session_save(session)` in `_persist_turn` | `nanobot/agent/loop.py` line ~2142 | Async-save: replaces sync `self.sessions.save(session)` |
 
 ## 7. Post-Merge Verification (commands)
 
