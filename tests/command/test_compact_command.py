@@ -109,6 +109,7 @@ async def test_checkpoint_continues_through_reloaded_session(loop, trigger, summ
     else:
         await loop.auto_compact._archive(key, runtime=loop.llm_runtime())
 
+    await loop.await_pending_session_saves()
     loop.sessions.invalidate(key)
     loop.auto_compact._summaries.clear()
     reloaded = loop.sessions.get_or_create(key)
@@ -131,6 +132,7 @@ async def test_checkpoint_continues_through_reloaded_session(loop, trigger, summ
     assert sent[1] == {"role": "user", "content": SUMMARY_CONTINUATION_TEXT}
     assert "Continue the inspection" in sent[2]["content"]
 
+    await loop.await_pending_session_saves()
     loop.sessions.invalidate(key)
     resumed = loop.sessions.get_or_create(key)
     assert [message["role"] for message in resumed.get_history()] == ["user", "user", "assistant"]

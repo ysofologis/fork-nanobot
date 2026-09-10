@@ -1071,6 +1071,7 @@ async def test_process_message_persists_user_message_before_turn_completes(tmp_p
     with pytest.raises(RuntimeError, match="boom"):
         await loop._process_message(msg)
 
+    await loop.await_pending_session_saves()
     loop.sessions.invalidate("feishu:c1")
     persisted = loop.sessions.get_or_create("feishu:c1")
     assert [m["role"] for m in persisted.messages] == ["user"]
@@ -1909,6 +1910,7 @@ async def test_stop_preserves_runtime_checkpoint_for_next_turn(tmp_path: Path) -
     assert "Stopped 1 task" in stop_result.content
     assert task.done()
 
+    await loop.await_pending_session_saves()
     loop.sessions.invalidate("feishu:c4")
     interrupted = loop.sessions.get_or_create("feishu:c4")
     assert interrupted.metadata.get(AgentLoop._PENDING_USER_TURN_KEY) is True
@@ -2013,6 +2015,7 @@ async def test_system_subagent_followup_is_persisted_before_prompt_assembly(tmp_
     assert non_system[2]["content"].count("subagent result") == 1
     assert non_system[2]["content"] == "subagent result"
 
+    await loop.await_pending_session_saves()
     loop.sessions.invalidate("cli:test")
     persisted = loop.sessions.get_or_create("cli:test")
     assert [
@@ -2050,6 +2053,7 @@ async def test_turn_usage_is_persisted_with_the_saved_session(tmp_path: Path) ->
         InboundMessage(channel="cli", sender_id="user", chat_id="usage", content="hello")
     )
 
+    await loop.await_pending_session_saves()
     loop.sessions.invalidate("cli:usage")
     assert loop.sessions.get_or_create("cli:usage").metadata["_last_usage"] == (
         turn_usage.to_dict()
@@ -2377,6 +2381,7 @@ async def test_turn_after_unanswered_user_keeps_tool_call_pairing(tmp_path: Path
     )
 
     assert result is not None
+    await loop.await_pending_session_saves()
     loop.sessions.invalidate("feishu:c-merge")
     persisted = loop.sessions.get_or_create("feishu:c-merge")
 
