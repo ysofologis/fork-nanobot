@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import os
 import time
 import weakref
@@ -1632,6 +1633,44 @@ class AgentLoop:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+    def schedule_session_save(self, session: Session) -> None:
+        """Persist a session to disk without blocking the current turn.
+
+        The save runs on the event loop as a background task so the user sees
+        the response before the JSON flush completes (per-turn latency is
+        dominated by the LLM stream, but the trailing disk write can still be
+        tens of milliseconds on slow mounts). The session is captured by
+        reference: in-memory state is already authoritative for this turn, and
+        the per-session asyncio lock prevents a racing turn for the same key
+        from interleaving with this save. Crash-safety is preserved by the
+        existing ``SessionManager._session_files_lock`` (atomic-rename) and by
+        awaiting pending saves on ``aclose()``.
+        """
+        async def _flush() -> None:
+            try:
+                result = self.sessions.save(session)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception(
+                    "Background session save failed for {}",
+                    session.key,
+                )
+
+        self.schedule_background(_flush())
+
+    async def await_pending_session_saves(self) -> None:
+        """Wait for any in-flight background session saves to complete.
+
+        Useful for tests and for callers that need a strong durability
+        boundary (e.g. before reading the session file back from disk).
+        """
+        if self._background_tasks:
+            await asyncio.gather(
+                *tuple(self._background_tasks),
+                return_exceptions=True,
+            )
+
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
@@ -2097,7 +2136,10 @@ class AgentLoop:
         ctx.delivery.record_latency(ctx.turn_latency_ms)
         self._clear_pending_user_turn(session)
         self._clear_runtime_checkpoint(session)
-        self.sessions.save(session)
+        # Feature 6: defer the disk write so the user sees the response before
+        # the JSON flush completes. The in-memory session is authoritative;
+        # ``aclose()`` and ``await_pending_session_saves()`` provide durability.
+        self.schedule_session_save(session)
         if not ctx.ephemeral:
             await self.runtime_event_publisher.session_turn_persisted(
                 ctx.msg,

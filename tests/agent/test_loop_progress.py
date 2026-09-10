@@ -1273,7 +1273,14 @@ class TestToolEventProgress:
             metadata=metadata,
         ))
 
-        assert scheduled == []
+        # Feature 6 schedules a background session save on every turn; that
+        # save is unrelated to title generation. Filter to title-related work
+        # before asserting that the opt-in metadata suppressed the title path.
+        title_tasks = [
+            coro for coro in scheduled
+            if "_generate_title_and_notify" in getattr(coro, "__qualname__", "")
+        ]
+        assert title_tasks == []
         provider.chat_with_retry.assert_awaited_once()
         assert "title" not in session.metadata
 
