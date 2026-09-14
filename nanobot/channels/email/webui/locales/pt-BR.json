@@ -1,27 +1,21 @@
 {
   "displayName": "E-mail",
-  "description": "Permita que o nanobot receba e responda e-mails.",
-  "requirements": "Caixa IMAP, envio SMTP, senha de app e consentimento explícito",
   "setup": {
     "docsLabel": "Abrir guia de e-mail",
     "officialLabel": "Abrir guia de senhas de app",
-    "tryIt": "Envie um e-mail de teste para a caixa conectada.",
-    "summary": "O nanobot lê e-mails por IMAP e responde por SMTP. Use uma caixa dedicada e autorize o acesso antes de ativar o canal.",
-    "steps": [
-      "Crie uma caixa dedicada e, quando necessário, uma senha de app.",
-      "Escolha um provedor ou informe IMAP e SMTP manualmente.",
-      "Autorize o acesso, salve e ative o canal de e-mail. Depois, envie uma mensagem de teste."
-    ],
+    "presetLabel": "Preenchimento rápido",
+    "sections": {
+      "receiving": "Recebimento de e-mail",
+      "sending": "Envio de e-mail"
+    },
     "presets": {
       "gmail": "Gmail",
       "outlook": "Outlook",
-      "icloud": "iCloud",
-      "custom": "Personalizado"
+      "icloud": "iCloud"
     },
     "fields": {
       "consentGranted": {
         "label": "Permitir que o nanobot leia e envie e-mails",
-        "help": "Ative para permitir o acesso a esta caixa de e-mail. Confirme que ela é dedicada ao bot.",
         "choices": {
           "true": "Concedido",
           "false": "Não concedido"
@@ -37,8 +31,7 @@
       },
       "imapPassword": {
         "label": "Senha IMAP",
-        "placeholder": "Senha de app",
-        "help": "Use uma senha de app quando o provedor exigir."
+        "placeholder": "Senha de app"
       },
       "smtpHost": {
         "label": "Host SMTP",
@@ -50,8 +43,7 @@
       },
       "smtpPassword": {
         "label": "Senha SMTP",
-        "placeholder": "Senha de app",
-        "help": "Normalmente é a mesma senha usada no IMAP."
+        "placeholder": "Senha de app"
       },
       "imapPort": {
         "label": "Porta IMAP",
@@ -71,8 +63,7 @@
       },
       "allowFrom": {
         "label": "Remetentes permitidos",
-        "placeholder": "E-mails separados por vírgulas",
-        "help": "Deixe vazio para exigir pareamento prévio."
+        "placeholder": "E-mails separados por vírgulas"
       },
       "verifyDkim": {
         "label": "Verificar DKIM",
@@ -87,6 +78,83 @@
           "true": "Ativado",
           "false": "Desativado"
         }
+      },
+      "imapMailbox": {
+        "label": "Caixa de correio IMAP"
+      },
+      "imapUseSsl": {
+        "label": "SSL IMAP",
+        "choices": {
+          "true": "Ligado",
+          "false": "Desligado"
+        }
+      },
+      "smtpUseTls": {
+        "label": "TLS SMTP",
+        "choices": {
+          "true": "Ligado",
+          "false": "Desligado"
+        }
+      },
+      "smtpUseSsl": {
+        "label": "SSL SMTP",
+        "choices": {
+          "true": "Ligado",
+          "false": "Desligado"
+        }
+      },
+      "autoReplyEnabled": {
+        "label": "Respostas automáticas",
+        "choices": {
+          "true": "Ligado",
+          "false": "Desligado"
+        }
+      },
+      "markSeen": {
+        "label": "Marcar como lido",
+        "choices": {
+          "true": "Ligado",
+          "false": "Desligado"
+        }
+      },
+      "postAction": {
+        "label": "Após o processamento",
+        "choices": {
+          "delete": "Excluir",
+          "move": "Mover"
+        }
+      },
+      "postActionMoveMailbox": {
+        "label": "Mover para caixa de correio"
+      },
+      "postActionExpunge": {
+        "label": "Aplicar ação permanentemente",
+        "choices": {
+          "true": "Ligado",
+          "false": "Desligado"
+        }
+      },
+      "postActionIgnoreSkipped": {
+        "label": "Ignorar mensagens ignoradas",
+        "choices": {
+          "true": "Ligado",
+          "false": "Desligado"
+        }
+      },
+      "maxBodyChars": {
+        "label": "Comprimento máximo do corpo"
+      },
+      "subjectPrefix": {
+        "label": "Prefixo do assunto da resposta"
+      },
+      "allowedAttachmentTypes": {
+        "label": "Tipos de anexos permitidos"
+      },
+      "maxAttachmentSize": {
+        "label": "Tamanho máximo do anexo"
+      },
+      "maxAttachmentsPerEmail": {
+        "label": "Máximo de anexos"
       }
     }
   }

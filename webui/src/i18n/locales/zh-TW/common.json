@@ -7,15 +7,20 @@
     },
     "error": {
       "title": "無法連線到 nanobot",
-      "gatewayHint": "請確認閘道已啟動（`nanobot gateway`），並且目前頁面與閘道在同一台機器上開啟。"
+      "gatewayHint": "請確認閘道已啟動（`nanobot gateway`），並且目前瀏覽器可以存取它的 WebUI 位址。"
     },
     "auth": {
-      "label": "密碼",
+      "title": "連線到 nanobot",
+      "label": "WebUI 密碼",
+      "helpTitle": "在哪裡找到密碼？",
+      "helpConfig": "在執行 nanobot 的裝置上開啟設定檔，通常位於：",
+      "helpSecret": "複製此欄位的值作為密碼：",
+      "helpFallback": "若該值為空，請使用 <code>channels.websocket.token</code>。",
       "showPassword": "顯示密碼",
       "hidePassword": "隱藏密碼",
       "submit": "連線",
-      "required": "請輸入密碼。",
-      "invalid": "密碼錯誤，請再試一次。"
+      "required": "請輸入密碼",
+      "invalid": "密碼不正確，請重試"
     },
     "account": {
       "section": "帳戶",
@@ -42,8 +47,8 @@
       "description": "nanobot Web UI —— 與你的 nanobot 工作區對話。"
     },
     "pairing": {
-      "title": "配對聊天使用者",
-      "description": "輸入聊天中顯示的配對碼。",
+      "title": "配對你的聊天帳號",
+      "description": "輸入你在聊天平台收到的配對碼。",
       "code": "配對碼",
       "matched": "已符合 {{channel}}，正在連線…",
       "expiresInline": "配對碼將於 {{expires}} 到期。",
@@ -783,7 +788,6 @@
       "requires": "需要：{{requirements}}",
       "setUp": "設定",
       "setupGuide": "設定指南",
-      "setupSummary": "啟用此通訊管道只會開啟 nanobot 的支援功能。請新增平台憑證，然後重新啟動 nanobot。",
       "configKeys": "設定欄位",
       "enable": "啟用通訊管道",
       "disable": "停用通訊管道",
@@ -797,7 +801,8 @@
       "open": "開啟",
       "checkedAndEnabled": "已檢查並啟用。",
       "checking": "正在檢查...",
-      "checkOnly": "僅檢查",
+      "help": "說明",
+      "checkOnly": "檢測",
       "commandCopied": "指令已複製。",
       "commandCopyFailed": "無法複製指令。",
       "configuredInstances_one": "已設定 {{count}} 個執行個體",
@@ -817,7 +822,6 @@
       "runtimeStarting": "正在啟動",
       "runtimeStopped": "未執行",
       "managedByWebui": "由 WebUI 管理",
-      "officialGuide": "官方指南",
       "optional": "選填",
       "providerPreset": "服務供應商",
       "requiredSetup": "必要設定",
@@ -826,19 +830,49 @@
       "savedSettings": "設定已儲存。",
       "saveSettings": "儲存設定",
       "selectChannel": "檢視 {{name}} 設定",
-      "setupSteps": "後續步驟",
       "showSecret": "顯示金鑰",
       "toggleChannel": "啟用 {{name}}",
       "toggleInstance": "{{name}} 執行個體",
-      "tryIt": "試試看",
       "validationFailed": "啟用前請檢查必要設定。",
+      "completeSetupToEnable": "請先完成下方必要設定，然後即可啟用此頻道。",
+      "chooseCredentialMethod": "選擇一種憑證方式",
+      "or": "或",
+      "fieldRequired": "完成設定需要此欄位。",
+      "secretWillBeRemoved": "將被移除",
+      "keepSavedSecret": "保留已儲存的憑證",
+      "removeSavedSecret": "移除已儲存的憑證",
+      "sections": {
+        "account": "帳戶",
+        "credentials": "憑證",
+        "connection": "連線",
+        "access": "存取權限",
+        "behavior": "行為",
+        "security": "安全性"
+      },
       "validation": {
         "connected": "已連線",
-        "configured": "手動設定",
+        "configured": "未驗證",
         "needs_setup": "需要設定",
-        "invalid": "無效",
+        "invalid": "連線失敗",
         "unsupported": "手動設定"
-      }
+      },
+      "validationMessages": {
+        "connected": "連線正常",
+        "unverified": "尚未驗證連線是否可用",
+        "missing": "請填寫必填欄位",
+        "invalid": "檢測失敗",
+        "unsupported": "此渠道暫不支援連線檢測",
+        "present": "已填寫",
+        "required": "必填",
+        "manual": "此渠道暫不支援連線檢測"
+      },
+      "search": "搜尋聊天平台",
+      "filterEnabled": "已啟用",
+      "noResults": "沒有符合的渠道",
+      "install": "安裝",
+      "installChannel": "安裝 {{name}}",
+      "noInstallNeeded": "無需安裝",
+      "installNeeded": "需要額外依賴"
     },
     "nanobotFeatures": {
       "enabled": "已啟用",
@@ -849,16 +883,61 @@
       "installSupport": "安裝支援套件",
       "installConfirmTitle": "安裝 {{name}} 的支援套件？",
       "installConfirmDescription": "nanobot 將安裝 {{name}} 所需的元件並啟用支援。要繼續嗎？",
+      "installOnlyConfirmDescription": "將安裝 {{name}} 所需的支援套件。安裝完成後即可連線。",
       "installConfirmAction": "安裝並啟用",
+      "installOnlyConfirmAction": "安裝支援套件",
       "websocketRequired": "WebUI 需要此功能",
       "channelDisabled": "通訊管道已停用",
       "notEnabled": "未啟用"
     },
     "automations": {
+      "taskInfo": "任務資訊",
+      "runDetails": {
+        "loading": "正在載入回覆…",
+        "loadError": "回覆載入失敗。",
+        "retry": "重試",
+        "emptyOutput": "本次執行未產生回覆。",
+        "result": "執行結果",
+        "duration": "耗時",
+        "noOutput": "此記錄未儲存回覆正文。"
+      },
+      "create": "建立自動任務",
+      "createPrompt": "想讓 nanobot 自動幫你做什麼？",
+      "createInput": "描述自動任務",
+      "errors": {
+        "legacyMissingDestination": "這個舊版自動任務缺少傳送目標，無法繼續執行。請從關聯對話中重新建立該任務。"
+      },
+      "calendar": {
+        "previousMonth": "上個月",
+        "nextMonth": "下個月",
+        "today": "今天",
+        "planned": "預定執行",
+        "recorded": "實際記錄",
+        "more": "另有 {{count}} 項",
+        "less": "收合",
+        "noEntries": "本月沒有執行記錄。"
+      },
+      "yourTasks": "你的自動任務",
+      "systemTasks": "系統任務",
+      "views": {
+        "label": "自動任務檢視",
+        "tasks": "任務",
+        "calendar": "行事曆"
+      },
+      "filter": "篩選",
+      "filteredBy": "篩選：{{status}}",
+      "commandCondition": "透過指令觸發",
+      "instructions": "任務指示",
+      "done": "完成",
+      "moreDetails": "更多詳細資訊",
+      "moreActions": "更多操作",
+      "neverRun": "尚未執行",
+      "skipped": "已略過",
+      "oneShotHint": "執行後移除",
       "filters": {
         "all": "全部",
         "active": "已啟用",
-        "paused": "已暫停",
+        "paused": "已停用",
         "failed": "需要處理",
         "system": "系統"
       },
@@ -868,12 +947,11 @@
         "updated": "更新時間",
         "name": "名稱"
       },
-      "search": "搜尋任務、訊息、關聯對話或排程",
       "queue": "任務佇列",
       "loading": "正在載入自動任務…",
       "noMatches": "目前沒有符合條件的自動任務。",
       "empty": "尚無自動任務。",
-      "emptyHint": "請在聊天中建立自動任務，以保留正確的對話脈絡。",
+      "emptyHint": "在聊天中告訴 nanobot 你想定期做什麼，即可建立自動任務。",
       "emptyAction": "開啟聊天",
       "clearFilters": "清除篩選",
       "oneShot": "單次",
@@ -887,8 +965,8 @@
         "updated": "更新時間"
       },
       "runNow": "立即執行",
-      "pause": "暫停",
-      "resume": "繼續",
+      "pause": "停用",
+      "resume": "啟用",
       "edit": "編輯",
       "delete": "刪除",
       "protected": "受保護",
@@ -902,7 +980,7 @@
       "status": {
         "system": "系統",
         "running": "正在執行",
-        "paused": "已暫停",
+        "paused": "已停用",
         "failed": "失敗",
         "completed": "已完成",
         "noSchedule": "無排程",
@@ -914,28 +992,17 @@
       },
       "channels": {
         "api": "API",
-        "cli": "CLI",
-        "dingtalk": "釘釘",
-        "discord": "Discord",
-        "email": "電子郵件",
-        "feishu": "飛書",
-        "matrix": "Matrix",
-        "msteams": "Microsoft Teams",
-        "qq": "QQ",
-        "slack": "Slack",
-        "telegram": "Telegram",
-        "wechat": "微信",
-        "wecom": "企業微信",
-        "weixin": "微信",
-        "whatsapp": "WhatsApp"
+        "cli": "CLI"
       },
       "schedule": {
+        "weeklyAt": "每{{day}} {{time}}",
         "at": "於 {{time}}",
         "every": "每 {{duration}}",
         "cron": "Cron {{expr}}",
-        "cronWithTz": "Cron {{expr}} · {{tz}}",
-        "withTz": "{{summary}} · {{tz}}",
+        "cronWithTz": "Cron {{expr}}（{{tz}}）",
+        "withTz": "{{summary}}（{{tz}}）",
         "dailyAt": "每天 {{time}}",
+        "monthlyAt": "每月 {{day}} 日 {{time}}",
         "weekdaysAt": "每週一至週五 {{time}}",
         "hourlyAt": "每小時第 {{minute}} 分鐘",
         "hourlyWindow": "每天 {{start}} 時至 {{end}} 時之間，於每小時第 {{minute}} 分鐘執行",
@@ -943,7 +1010,7 @@
         "custom": "自訂排程"
       },
       "next": {
-        "paused": "已暫停",
+        "paused": "已停用",
         "pending": "正在執行",
         "local": "等待觸發",
         "none": "沒有後續執行排程"
@@ -961,7 +1028,10 @@
         "unit": "單位",
         "cronExpression": "Cron 表達式",
         "timezone": "時區",
-        "runAt": "執行時間"
+        "runAt": "執行時間",
+        "runDate": "執行日期",
+        "runTime": "執行時刻",
+        "chooseDate": "選擇日期"
       },
       "scheduleTypes": {
         "every": "間隔",
@@ -1164,7 +1234,7 @@
       "at": "{{time}}",
       "every": "每 {{duration}}",
       "cron": "Cron {{expr}}",
-      "cronWithTz": "Cron {{expr}} · {{tz}}",
+      "cronWithTz": "Cron {{expr}}（{{tz}}）",
       "local": "本機觸發器",
       "unknown": "自訂排程"
     },
@@ -1187,7 +1257,7 @@
     "compaction": {
       "cancelled": "上下文壓縮已取消",
       "empty": "無需壓縮上下文",
-      "started": "正在壓縮上下文",
+      "started": "正在壓縮上下文…",
       "failed": "上下文壓縮失敗",
       "succeeded": "上下文已壓縮"
     },
@@ -1267,12 +1337,13 @@
       "loading": "正在載入自動任務…",
       "loadFailed": "無法載入自動任務。",
       "empty": "這個對話目前沒有自動任務。",
+      "openCalendar": "在日曆中查看全部",
       "disabled": "已關閉",
       "schedule": {
         "at": "{{time}}",
         "every": "每 {{duration}}",
         "cron": "Cron {{expr}}",
-        "cronWithTz": "Cron {{expr}} · {{tz}}",
+        "cronWithTz": "Cron {{expr}}（{{tz}}）",
         "local": "本機觸發器",
         "unknown": "自訂排程"
       },
@@ -1548,6 +1619,8 @@
     "activityWorkingFor": "處理中，已 {{duration}}",
     "activityWorked": "已處理",
     "activityWorkedFor": "已處理 {{duration}}",
+    "traceDetailsLoadFailed": "無法載入完整活動詳情。",
+    "retryTraceDetails": "重試",
     "retryConnection": "連線失敗",
     "retryTimeout": "模型回應逾時",
     "retryRateLimit": "請求頻率受限",

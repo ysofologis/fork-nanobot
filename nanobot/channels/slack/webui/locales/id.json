@@ -1,29 +1,18 @@
 {
-  "description": "Gunakan nanobot dari ruang kerja Slack.",
-  "requirements": "Token aplikasi Slack, token bot, dan aplikasi terpasang di ruang kerja",
   "setup": {
     "docsLabel": "Buka panduan Slack",
     "officialLabel": "Buka aplikasi Slack",
-    "tryIt": "Sebut aplikasi Slack atau kirim pesan langsung.",
-    "summary": "Slack menggunakan Socket Mode secara default sehingga memerlukan token aplikasi dan token bot.",
-    "steps": [
-      "Buat aplikasi Slack dari manifes yang disediakan, lalu aktifkan Socket Mode.",
-      "Pasang aplikasi ke ruang kerja dan salin token aplikasi serta bot.",
-      "Simpan dan aktifkan Slack, lalu sebut aplikasi atau kirim DM."
-    ],
     "actions": {
       "slack-manifest": "Salin manifes aplikasi"
     },
     "fields": {
       "appToken": {
         "label": "Token aplikasi",
-        "placeholder": "xapp-...",
-        "help": "Buat token di pengaturan Socket Mode aplikasi Slack Anda."
+        "placeholder": "xapp-..."
       },
       "botToken": {
         "label": "Token bot",
-        "placeholder": "xoxb-...",
-        "help": "Gunakan token bot setelah memasang aplikasi Slack."
+        "placeholder": "xoxb-..."
       },
       "groupPolicy": {
         "label": "Perilaku grup",
@@ -32,6 +21,72 @@
           "open": "Semua pesan",
           "allowlist": "Daftar izin"
         }
+      },
+      "mode": {
+        "label": "Modus koneksi",
+        "choices": {
+          "socket": "Mode Soket"
+        }
+      },
+      "webhookPath": {
+        "label": "Jalur webhook"
+      },
+      "replyInThread": {
+        "label": "Balas di thread",
+        "choices": {
+          "true": "Aktif",
+          "false": "Mati"
+        }
+      },
+      "reactEmoji": {
+        "label": "Baca emoji"
+      },
+      "doneEmoji": {
+        "label": "Selesai emoji"
+      },
+      "includeThreadContext": {
+        "label": "Sertakan konteks thread",
+        "choices": {
+          "true": "Aktif",
+          "false": "Mati"
+        }
+      },
+      "threadContextLimit": {
+        "label": "Batas konteks thread"
+      },
+      "allowFrom": {
+        "label": "Pengguna yang diizinkan"
+      },
+      "groupAllowFrom": {
+        "label": "Saluran yang diizinkan"
+      },
+      "groupRequireMention": {
+        "label": "Wajibkan penyebutan di saluran",
+        "choices": {
+          "true": "Aktif",
+          "false": "Mati"
+        }
+      },
+      "dm_enabled": {
+        "label": "Aktifkan pesan langsung",
+        "choices": {
+          "true": "Aktif",
+          "false": "Mati"
+        }
+      },
+      "dm_policy": {
+        "label": "Akses pesan langsung",
+        "choices": {
+          "allowlist": "Daftar yang diizinkan",
+          "open": "Buka"
+        }
+      },
+      "dm_allowFrom": {
+        "label": "Mengizinkan pengguna pesan langsung"
+      },
+      "proxy": {
+        "label": "Proxy jaringan",
+        "placeholder": "http://127.0.0.1:7890"
       }
     }
   }

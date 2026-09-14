@@ -7,15 +7,20 @@
     },
     "error": {
       "title": "Não foi possível conectar-se com o nanobot",
-      "gatewayHint": "Verifique se o gateway está em execução (`nanobot gateway`) e se esta página está aberta na mesma máquina."
+      "gatewayHint": "Verifique se o gateway está em execução (`nanobot gateway`) e se este navegador consegue acessar o endereço da WebUI."
     },
     "auth": {
-      "label": "Senha",
+      "title": "Conectar ao nanobot",
+      "label": "Senha da WebUI",
+      "helpTitle": "Onde encontro a senha?",
+      "helpConfig": "No dispositivo que executa o nanobot, abra o arquivo de configuração, geralmente em:",
+      "helpSecret": "Copie o valor deste campo como senha:",
+      "helpFallback": "Se esse valor estiver vazio, use <code>channels.websocket.token</code>.",
       "showPassword": "Mostrar senha",
       "hidePassword": "Ocultar senha",
       "submit": "Conectar",
-      "required": "Digite a senha.",
-      "invalid": "Senha incorreta. Tente novamente."
+      "required": "Digite a senha",
+      "invalid": "Senha incorreta"
     },
     "account": {
       "section": "Conta",
@@ -42,8 +47,8 @@
       "description": "Interface web do nanobot — converse com o seu espaço de trabalho do nanobot."
     },
     "pairing": {
-      "title": "Vincular usuário do chat",
-      "description": "Digite o código de vinculação exibido no chat.",
+      "title": "Parear sua conta de chat",
+      "description": "Digite o código de pareamento recebido no chat.",
       "code": "Código de vinculação",
       "matched": "Correspondência com {{channel}}. Conectando...",
       "expiresInline": "O código expira {{expires}}.",
@@ -791,13 +796,13 @@
       "searchPlaceholder": "Buscar canais",
       "backToChannels": "Todos os canais",
       "catalog": "Canais",
+      "help": "Ajuda",
       "loading": "Carregando canais...",
       "empty": "Nenhum canal corresponde a este filtro.",
       "restartRequired": "Reinicie o nanobot para aplicar o suporte de canais atualizado.",
       "requires": "Requer: {{requirements}}",
       "setUp": "Configurar",
       "setupGuide": "Guia de configuração",
-      "setupSummary": "Ative o canal, adicione as credenciais da plataforma e reinicie o nanobot.",
       "configKeys": "Chaves de configuração",
       "enable": "Habilitar canal",
       "disable": "Desabilitar canal",
@@ -831,7 +836,6 @@
       "runtimeStarting": "Iniciando",
       "runtimeStopped": "Não está em execução",
       "managedByWebui": "Gerenciado pela WebUI",
-      "officialGuide": "Guia oficial",
       "optional": "Opcional",
       "providerPreset": "Provedor",
       "requiredSetup": "Configuração obrigatória",
@@ -840,19 +844,49 @@
       "savedSettings": "Configurações salvas.",
       "saveSettings": "Salvar configurações",
       "selectChannel": "Ver configurações de {{name}}",
-      "setupSteps": "Próximas etapas",
       "showSecret": "Mostrar segredo",
       "toggleChannel": "Ativar {{name}}",
       "toggleInstance": "Ativar a instância {{name}}",
-      "tryIt": "Experimente",
       "validationFailed": "Verifique a configuração obrigatória antes de ativar.",
+      "completeSetupToEnable": "Conclua a configuração obrigatória abaixo para ativar este canal.",
+      "chooseCredentialMethod": "Escolha um método de credencial",
+      "or": "ou",
+      "fieldRequired": "Obrigatório para concluir a configuração.",
+      "secretWillBeRemoved": "Será removida",
+      "keepSavedSecret": "Manter credencial salva",
+      "removeSavedSecret": "Remover credencial salva",
+      "sections": {
+        "account": "Conta",
+        "credentials": "Credenciais",
+        "connection": "Conexão",
+        "access": "Acesso",
+        "behavior": "Comportamento",
+        "security": "Segurança"
+      },
       "validation": {
         "connected": "Conectado",
         "configured": "Configurado manualmente",
         "needs_setup": "Requer configuração",
-        "invalid": "Inválido",
+        "invalid": "Falha na conexão",
         "unsupported": "Configuração manual"
-      }
+      },
+      "validationMessages": {
+        "connected": "Conexão verificada.",
+        "unverified": "Conexão não verificada.",
+        "missing": "Preencha os campos obrigatórios.",
+        "invalid": "Falha ao verificar a conexão.",
+        "unsupported": "Este canal ainda não permite verificar a conexão.",
+        "present": "Preenchido",
+        "required": "Obrigatório",
+        "manual": "Este canal ainda não permite verificar a conexão."
+      },
+      "search": "Buscar canais",
+      "filterEnabled": "Ativados",
+      "noResults": "Nenhum canal correspondente",
+      "install": "Instalar",
+      "installChannel": "Instalar {{name}}",
+      "noInstallNeeded": "Não requer instalação",
+      "installNeeded": "Requer dependências"
     },
     "nanobotFeatures": {
       "enabled": "Habilitado",
@@ -863,16 +897,61 @@
       "installSupport": "Instalar dependências",
       "installConfirmTitle": "Instalar as dependências de {{name}}?",
       "installConfirmDescription": "O nanobot instalará as dependências necessárias e ativará {{name}}.",
+      "installOnlyConfirmDescription": "O nanobot instalará o que {{name}} precisa. Você poderá conectá-lo após a instalação.",
       "installConfirmAction": "Instalar e habilitar",
+      "installOnlyConfirmAction": "Instalar suporte",
       "websocketRequired": "Necessário para a WebUI",
       "channelDisabled": "Canal desabilitado",
       "notEnabled": "Não habilitado"
     },
     "automations": {
+      "taskInfo": "Informações da tarefa",
+      "runDetails": {
+        "loading": "Carregando resposta…",
+        "loadError": "Não foi possível carregar a resposta.",
+        "retry": "Tentar novamente",
+        "emptyOutput": "Nenhuma resposta foi gerada.",
+        "result": "Resultado",
+        "duration": "Duração",
+        "noOutput": "Este registro não inclui o texto da resposta."
+      },
+      "create": "Criar automação",
+      "createPrompt": "O que você gostaria de automatizar com o nanobot?",
+      "createInput": "Descreva uma automação",
+      "errors": {
+        "legacyMissingDestination": "Esta automação antiga não tem um destino de entrega. Recrie-a na conversa vinculada para continuar."
+      },
+      "calendar": {
+        "previousMonth": "Mês anterior",
+        "nextMonth": "Próximo mês",
+        "today": "Hoje",
+        "planned": "Planejado",
+        "recorded": "Registrado",
+        "more": "+{{count}} mais",
+        "less": "Mostrar menos",
+        "noEntries": "Nenhuma execução neste mês."
+      },
+      "yourTasks": "Suas automações",
+      "systemTasks": "Tarefas do sistema",
+      "views": {
+        "label": "Visualização das automações",
+        "tasks": "Tarefas",
+        "calendar": "Calendário"
+      },
+      "filter": "Filtrar",
+      "filteredBy": "Filtro: {{status}}",
+      "commandCondition": "Acionada por comando",
+      "instructions": "Instruções",
+      "done": "Concluído",
+      "moreDetails": "Mais detalhes",
+      "moreActions": "Mais ações",
+      "neverRun": "Ainda não executado",
+      "skipped": "Ignorado",
+      "oneShotHint": "Removida após a execução",
       "filters": {
         "all": "Todas",
         "active": "Ativas",
-        "paused": "Pausadas",
+        "paused": "Desativadas",
         "failed": "Precisam de atenção",
         "system": "Sistema"
       },
@@ -882,12 +961,11 @@
         "updated": "Atualizada",
         "name": "Nome"
       },
-      "search": "Buscar tarefa, mensagem, conversa vinculada ou agendamento",
       "queue": "Fila",
       "loading": "Carregando automações...",
       "noMatches": "Nenhuma automação corresponde a esta visualização.",
       "empty": "Nenhuma automação ainda.",
-      "emptyHint": "Crie automações em uma conversa para que mantenham o contexto correto.",
+      "emptyHint": "Diga ao nanobot em uma conversa o que você quer que ele faça e quando.",
       "emptyAction": "Abrir uma conversa",
       "clearFilters": "Limpar filtros",
       "oneShot": "Uma vez",
@@ -901,8 +979,8 @@
         "updated": "Atualizada"
       },
       "runNow": "Executar agora",
-      "pause": "Pausar",
-      "resume": "Retomar",
+      "pause": "Desativar",
+      "resume": "Ativar",
       "edit": "Editar",
       "delete": "Excluir",
       "protected": "Protegida",
@@ -916,7 +994,7 @@
       "status": {
         "system": "Sistema",
         "running": "Executando agora",
-        "paused": "Pausada",
+        "paused": "Desativada",
         "failed": "Falhou",
         "completed": "Concluída",
         "noSchedule": "Sem agendamento",
@@ -928,28 +1006,17 @@
       },
       "channels": {
         "api": "API",
-        "cli": "CLI",
-        "dingtalk": "DingTalk",
-        "discord": "Discord",
-        "email": "E-mail",
-        "feishu": "Feishu",
-        "matrix": "Matrix",
-        "msteams": "Microsoft Teams",
-        "qq": "QQ",
-        "slack": "Slack",
-        "telegram": "Telegram",
-        "wechat": "WeChat",
-        "wecom": "WeCom",
-        "weixin": "WeChat",
-        "whatsapp": "WhatsApp"
+        "cli": "CLI"
       },
       "schedule": {
+        "weeklyAt": "Toda {{day}} às {{time}}",
         "at": "Às {{time}}",
         "every": "A cada {{duration}}",
         "cron": "Cron {{expr}}",
-        "cronWithTz": "Cron {{expr}} · {{tz}}",
-        "withTz": "{{summary}} · {{tz}}",
+        "cronWithTz": "Cron {{expr}} ({{tz}})",
+        "withTz": "{{summary}} ({{tz}})",
         "dailyAt": "Diariamente às {{time}}",
+        "monthlyAt": "Todo dia {{day}} do mês às {{time}}",
         "weekdaysAt": "De segunda a sexta às {{time}}",
         "hourlyAt": "A cada hora, no minuto {{minute}}",
         "hourlyWindow": "A cada hora de {{start}} a {{end}}, no minuto {{minute}}",
@@ -957,7 +1024,7 @@
         "custom": "Agendamento personalizado"
       },
       "next": {
-        "paused": "Pausada",
+        "paused": "Desativada",
         "pending": "Executando agora",
         "local": "Aguardando gatilho",
         "none": "Sem próxima execução"
@@ -975,7 +1042,10 @@
         "unit": "Unidade",
         "cronExpression": "Expressão cron",
         "timezone": "Fuso horário",
-        "runAt": "Executar em"
+        "runAt": "Executar em",
+        "runDate": "Data de execução",
+        "runTime": "Hora de execução",
+        "chooseDate": "Escolher data"
       },
       "scheduleTypes": {
         "every": "Intervalo",
@@ -1178,7 +1248,7 @@
       "at": "{{time}}",
       "every": "A cada {{duration}}",
       "cron": "Cron {{expr}}",
-      "cronWithTz": "Cron {{expr}} · {{tz}}",
+      "cronWithTz": "Cron {{expr}} ({{tz}})",
       "local": "Gatilho local",
       "unknown": "Agendamento personalizado"
     },
@@ -1281,12 +1351,13 @@
       "loading": "Carregando automações...",
       "loadFailed": "Não foi possível carregar as automações.",
       "empty": "Ainda não há automações nesta sessão.",
+      "openCalendar": "Ver tudo no calendário",
       "disabled": "Desligado",
       "schedule": {
         "at": "{{time}}",
         "every": "A cada {{duration}}",
         "cron": "Cron {{expr}}",
-        "cronWithTz": "Cron {{expr}} · {{tz}}",
+        "cronWithTz": "Cron {{expr}} ({{tz}})",
         "local": "Gatilho local",
         "unknown": "Agendamento personalizado"
       },
@@ -1536,6 +1607,8 @@
     "activityWorkingFor": "Trabalhando por {{duration}}",
     "activityWorked": "Trabalhou",
     "activityWorkedFor": "Trabalhou por {{duration}}",
+    "traceDetailsLoadFailed": "Não foi possível carregar os detalhes completos da atividade.",
+    "retryTraceDetails": "Tentar novamente",
     "retryConnection": "Falha na conexão",
     "retryTimeout": "O modelo excedeu o tempo limite",
     "retryRateLimit": "Limite de solicitações atingido",

@@ -7,15 +7,20 @@
     },
     "error": {
       "title": "nanobot に接続できませんでした",
-      "gatewayHint": "gateway（`nanobot gateway`）が起動しており、このページが同じマシン上で開かれていることを確認してください。"
+      "gatewayHint": "gateway（`nanobot gateway`）が起動しており、このブラウザーから WebUI のアドレスに到達できることを確認してください。"
     },
     "auth": {
-      "label": "パスワード",
+      "title": "nanobot に接続",
+      "label": "WebUI パスワード",
+      "helpTitle": "パスワードはどこにありますか？",
+      "helpConfig": "nanobot を実行しているデバイスで設定ファイルを開きます。通常は次の場所にあります：",
+      "helpSecret": "このフィールドの値をパスワードとしてコピーします：",
+      "helpFallback": "値が空の場合は <code>channels.websocket.token</code> を使用してください。",
       "showPassword": "パスワードを表示",
       "hidePassword": "パスワードを隠す",
       "submit": "接続",
-      "required": "パスワードを入力してください。",
-      "invalid": "パスワードが正しくありません。もう一度お試しください。"
+      "required": "パスワードを入力",
+      "invalid": "パスワードが違います"
     },
     "account": {
       "section": "アカウント",
@@ -42,8 +47,8 @@
       "description": "nanobot Web UI — nanobot ワークスペースと会話します。"
     },
     "pairing": {
-      "title": "チャットユーザーをペアリング",
-      "description": "チャットに表示されたペアリングコードを入力してください。",
+      "title": "チャットアカウントをペアリング",
+      "description": "チャットで受け取ったペアリングコードを入力してください。",
       "code": "ペアリングコード",
       "matched": "{{channel}} と一致しました。接続中…",
       "expiresInline": "コードの有効期限: {{expires}}。",
@@ -777,13 +782,13 @@
       "searchPlaceholder": "チャンネルを検索",
       "backToChannels": "すべてのチャンネル",
       "catalog": "チャンネル",
+      "help": "ヘルプ",
       "loading": "チャンネルを読み込み中...",
       "empty": "一致するチャンネルはありません。",
       "restartRequired": "更新したチャンネルサポートを反映するには nanobot を再起動してください。",
       "requires": "必要: {{requirements}}",
       "setUp": "設定",
       "setupGuide": "設定ガイド",
-      "setupSummary": "チャンネルを有効にしてプラットフォームの認証情報を設定し、nanobot を再起動してください。",
       "configKeys": "設定キー",
       "enable": "チャンネルを有効化",
       "disable": "チャンネルを無効化",
@@ -817,7 +822,6 @@
       "runtimeStarting": "起動中",
       "runtimeStopped": "未実行",
       "managedByWebui": "WebUI で管理",
-      "officialGuide": "公式ガイド",
       "optional": "任意",
       "providerPreset": "プロバイダー",
       "requiredSetup": "必要な設定",
@@ -826,19 +830,49 @@
       "savedSettings": "設定を保存しました。",
       "saveSettings": "設定を保存",
       "selectChannel": "{{name}} の設定を表示",
-      "setupSteps": "次の手順",
       "showSecret": "シークレットを表示",
       "toggleChannel": "{{name}} を有効にする",
       "toggleInstance": "インスタンス {{name}} を有効にする",
-      "tryIt": "試してみる",
       "validationFailed": "有効化する前に必要な設定を確認してください。",
+      "completeSetupToEnable": "以下の必須設定を完了すると、このチャンネルを有効にできます。",
+      "chooseCredentialMethod": "認証方法を1つ選択",
+      "or": "または",
+      "fieldRequired": "設定を完了するために必要です。",
+      "secretWillBeRemoved": "削除されます",
+      "keepSavedSecret": "保存済みの認証情報を保持",
+      "removeSavedSecret": "保存済みの認証情報を削除",
+      "sections": {
+        "account": "アカウント",
+        "credentials": "認証情報",
+        "connection": "接続",
+        "access": "アクセス",
+        "behavior": "動作",
+        "security": "セキュリティ"
+      },
       "validation": {
         "connected": "接続済み",
         "configured": "手動設定済み",
         "needs_setup": "設定が必要",
-        "invalid": "無効",
+        "invalid": "接続失敗",
         "unsupported": "手動設定"
-      }
+      },
+      "validationMessages": {
+        "connected": "接続を確認しました。",
+        "unverified": "接続は未確認です。",
+        "missing": "必須項目を入力してください。",
+        "invalid": "接続確認に失敗しました。",
+        "unsupported": "このチャンネルでは、まだ接続を確認できません。",
+        "present": "入力済み",
+        "required": "必須",
+        "manual": "このチャンネルでは、まだ接続を確認できません。"
+      },
+      "search": "チャンネルを検索",
+      "filterEnabled": "有効",
+      "noResults": "一致するチャンネルはありません",
+      "install": "インストール",
+      "installChannel": "{{name}} をインストール",
+      "noInstallNeeded": "インストール不要",
+      "installNeeded": "依存関係が必要"
     },
     "nanobotFeatures": {
       "enabled": "有効",
@@ -849,16 +883,61 @@
       "installSupport": "必要なパッケージをインストール",
       "installConfirmTitle": "{{name}} に必要なパッケージをインストールしますか？",
       "installConfirmDescription": "nanobot が必要なパッケージをインストールし、{{name}} を有効にします。",
+      "installOnlyConfirmDescription": "nanobot が {{name}} に必要なサポートをインストールします。インストール後に接続できます。",
       "installConfirmAction": "インストールして有効化",
+      "installOnlyConfirmAction": "サポートをインストール",
       "websocketRequired": "WebUI に必須",
       "channelDisabled": "チャンネルは無効",
       "notEnabled": "無効"
     },
     "automations": {
+      "taskInfo": "タスク情報",
+      "runDetails": {
+        "loading": "応答を読み込み中…",
+        "loadError": "応答を読み込めませんでした。",
+        "retry": "再試行",
+        "emptyOutput": "応答は生成されませんでした。",
+        "result": "実行結果",
+        "duration": "所要時間",
+        "noOutput": "この記録に応答本文は保存されていません。"
+      },
+      "create": "自動タスクを作成",
+      "createPrompt": "nanobot に何を自動化してほしいですか？",
+      "createInput": "自動タスクを説明",
+      "errors": {
+        "legacyMissingDestination": "この旧形式の自動タスクには送信先がありません。続行するには、関連チャットから作り直してください。"
+      },
+      "calendar": {
+        "previousMonth": "前の月",
+        "nextMonth": "次の月",
+        "today": "今日",
+        "planned": "予定",
+        "recorded": "実績",
+        "more": "ほか{{count}}件",
+        "less": "折りたたむ",
+        "noEntries": "今月の実行はありません。"
+      },
+      "yourTasks": "自分の自動化",
+      "systemTasks": "システムタスク",
+      "views": {
+        "label": "自動化の表示",
+        "tasks": "タスク",
+        "calendar": "カレンダー"
+      },
+      "filter": "絞り込み",
+      "filteredBy": "絞り込み：{{status}}",
+      "commandCondition": "コマンドで実行",
+      "instructions": "指示",
+      "done": "完了",
+      "moreDetails": "詳細情報",
+      "moreActions": "その他の操作",
+      "neverRun": "未実行",
+      "skipped": "スキップ済み",
+      "oneShotHint": "実行後に削除",
       "filters": {
         "all": "すべて",
         "active": "有効",
-        "paused": "一時停止",
+        "paused": "無効",
         "failed": "要対応",
         "system": "システム"
       },
@@ -868,12 +947,11 @@
         "updated": "更新日時",
         "name": "名前"
       },
-      "search": "タスク、メッセージ、関連チャット、予定を検索",
       "queue": "キュー",
       "loading": "自動タスクを読み込み中...",
       "noMatches": "この表示に一致する自動タスクはありません。",
       "empty": "自動タスクはまだありません。",
-      "emptyHint": "チャットで自動タスクを作成すると、その会話の内容を引き継いで実行できます。",
+      "emptyHint": "決まった時間に実行してほしいことを、チャットで nanobot に伝えてください。",
       "emptyAction": "チャットを開く",
       "clearFilters": "フィルターをクリア",
       "oneShot": "一回限り",
@@ -887,8 +965,8 @@
         "updated": "更新"
       },
       "runNow": "今すぐ実行",
-      "pause": "一時停止",
-      "resume": "再開",
+      "pause": "無効にする",
+      "resume": "有効にする",
       "edit": "編集",
       "delete": "削除",
       "protected": "保護済み",
@@ -902,7 +980,7 @@
       "status": {
         "system": "システム",
         "running": "実行中",
-        "paused": "一時停止",
+        "paused": "無効",
         "failed": "失敗",
         "completed": "完了",
         "noSchedule": "スケジュールなし",
@@ -914,28 +992,17 @@
       },
       "channels": {
         "api": "API",
-        "cli": "CLI",
-        "dingtalk": "DingTalk",
-        "discord": "Discord",
-        "email": "Email",
-        "feishu": "Feishu",
-        "matrix": "Matrix",
-        "msteams": "Microsoft Teams",
-        "qq": "QQ",
-        "slack": "Slack",
-        "telegram": "Telegram",
-        "wechat": "WeChat",
-        "wecom": "WeCom",
-        "weixin": "WeChat",
-        "whatsapp": "WhatsApp"
+        "cli": "CLI"
       },
       "schedule": {
+        "weeklyAt": "毎週{{day}} {{time}}",
         "at": "{{time}}",
         "every": "{{duration}} ごと",
         "cron": "Cron {{expr}}",
-        "cronWithTz": "Cron {{expr}} · {{tz}}",
-        "withTz": "{{summary}} · {{tz}}",
+        "cronWithTz": "Cron {{expr}}（{{tz}}）",
+        "withTz": "{{summary}}（{{tz}}）",
         "dailyAt": "毎日 {{time}}",
+        "monthlyAt": "毎月{{day}}日 {{time}}",
         "weekdaysAt": "月曜日〜金曜日 {{time}}",
         "hourlyAt": "毎時 {{minute}} 分",
         "hourlyWindow": "{{start}}〜{{end}} の毎時 {{minute}} 分",
@@ -943,7 +1010,7 @@
         "custom": "カスタムスケジュール"
       },
       "next": {
-        "paused": "一時停止",
+        "paused": "無効",
         "pending": "実行中",
         "local": "トリガー待ち",
         "none": "次回実行なし"
@@ -961,7 +1028,10 @@
         "unit": "単位",
         "cronExpression": "Cron 式",
         "timezone": "タイムゾーン",
-        "runAt": "実行日時"
+        "runAt": "実行日時",
+        "runDate": "実行日",
+        "runTime": "実行時刻",
+        "chooseDate": "日付を選択"
       },
       "scheduleTypes": {
         "every": "間隔",
@@ -1164,7 +1234,7 @@
       "at": "{{time}}",
       "every": "{{duration}} ごと",
       "cron": "Cron {{expr}}",
-      "cronWithTz": "Cron {{expr}} · {{tz}}",
+      "cronWithTz": "Cron {{expr}}（{{tz}}）",
       "local": "ローカルトリガー",
       "unknown": "カスタムスケジュール"
     },
@@ -1267,12 +1337,13 @@
       "loading": "自動タスクを読み込み中...",
       "loadFailed": "自動タスクを読み込めませんでした。",
       "empty": "このセッションにはまだ自動タスクがありません。",
+      "openCalendar": "カレンダーですべて表示",
       "disabled": "オフ",
       "schedule": {
         "at": "{{time}}",
         "every": "{{duration}}ごと",
         "cron": "Cron {{expr}}",
-        "cronWithTz": "Cron {{expr}} · {{tz}}",
+        "cronWithTz": "Cron {{expr}}（{{tz}}）",
         "local": "ローカルトリガー",
         "unknown": "カスタムスケジュール"
       },
@@ -1549,6 +1620,8 @@
     "activityWorkingFor": "{{duration}}作業中",
     "activityWorked": "作業しました",
     "activityWorkedFor": "{{duration}}作業しました",
+    "traceDetailsLoadFailed": "アクティビティの詳細を読み込めませんでした。",
+    "retryTraceDetails": "再試行",
     "retryConnection": "接続に失敗しました",
     "retryTimeout": "モデルがタイムアウトしました",
     "retryRateLimit": "リクエスト制限に達しました",
