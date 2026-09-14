@@ -7,15 +7,20 @@
     },
     "error": {
       "title": "Tidak dapat menjangkau nanobot",
-      "gatewayHint": "Pastikan gateway sedang berjalan (`nanobot gateway`) dan halaman ini dibuka pada mesin yang sama."
+      "gatewayHint": "Pastikan gateway sedang berjalan (`nanobot gateway`) dan browser ini dapat menjangkau alamat WebUI-nya."
     },
     "auth": {
-      "label": "Kata sandi",
+      "title": "Hubungkan ke nanobot",
+      "label": "Kata sandi WebUI",
+      "helpTitle": "Di mana saya bisa menemukan kata sandi?",
+      "helpConfig": "Pada perangkat yang menjalankan nanobot, buka file konfigurasi, biasanya di:",
+      "helpSecret": "Salin nilai kolom ini sebagai kata sandi:",
+      "helpFallback": "Jika nilainya kosong, gunakan <code>channels.websocket.token</code>.",
       "showPassword": "Tampilkan kata sandi",
       "hidePassword": "Sembunyikan kata sandi",
       "submit": "Hubungkan",
-      "required": "Masukkan kata sandi.",
-      "invalid": "Kata sandi salah. Coba lagi."
+      "required": "Masukkan kata sandi",
+      "invalid": "Kata sandi salah"
     },
     "account": {
       "section": "Akun",
@@ -42,8 +47,8 @@
       "description": "UI web nanobot — ngobrol dengan ruang kerja nanobot Anda."
     },
     "pairing": {
-      "title": "Hubungkan pengguna chat",
-      "description": "Masukkan kode pairing yang ditampilkan di chat.",
+      "title": "Pasangkan akun chat Anda",
+      "description": "Masukkan kode pemasangan yang Anda terima di chat.",
       "code": "Kode pairing",
       "matched": "Cocok dengan {{channel}}. Menghubungkan...",
       "expiresInline": "Kode kedaluwarsa {{expires}}.",
@@ -777,13 +782,13 @@
       "searchPlaceholder": "Cari kanal",
       "backToChannels": "Semua kanal",
       "catalog": "Kanal",
+      "help": "Bantuan",
       "loading": "Memuat kanal...",
       "empty": "Tidak ada kanal yang cocok dengan filter ini.",
       "restartRequired": "Mulai ulang nanobot untuk menerapkan dukungan kanal yang diperbarui.",
       "requires": "Memerlukan: {{requirements}}",
       "setUp": "Siapkan",
       "setupGuide": "Panduan penyiapan",
-      "setupSummary": "Aktifkan kanal, tambahkan kredensial platform, lalu mulai ulang nanobot.",
       "configKeys": "Kunci konfigurasi",
       "enable": "Aktifkan kanal",
       "disable": "Nonaktifkan kanal",
@@ -817,7 +822,6 @@
       "runtimeStarting": "Memulai",
       "runtimeStopped": "Tidak berjalan",
       "managedByWebui": "Dikelola oleh WebUI",
-      "officialGuide": "Panduan resmi",
       "optional": "Opsional",
       "providerPreset": "Penyedia",
       "requiredSetup": "Penyiapan wajib",
@@ -826,19 +830,49 @@
       "savedSettings": "Pengaturan disimpan.",
       "saveSettings": "Simpan pengaturan",
       "selectChannel": "Lihat pengaturan {{name}}",
-      "setupSteps": "Langkah berikutnya",
       "showSecret": "Tampilkan kredensial",
       "toggleChannel": "Aktifkan {{name}}",
       "toggleInstance": "Aktifkan instans {{name}}",
-      "tryIt": "Coba",
       "validationFailed": "Periksa penyiapan wajib sebelum mengaktifkan.",
+      "completeSetupToEnable": "Selesaikan penyiapan wajib di bawah untuk mengaktifkan kanal ini.",
+      "chooseCredentialMethod": "Pilih satu metode kredensial",
+      "or": "atau",
+      "fieldRequired": "Wajib untuk menyelesaikan penyiapan.",
+      "secretWillBeRemoved": "Akan dihapus",
+      "keepSavedSecret": "Pertahankan kredensial tersimpan",
+      "removeSavedSecret": "Hapus kredensial tersimpan",
+      "sections": {
+        "account": "Akun",
+        "credentials": "Kredensial",
+        "connection": "Koneksi",
+        "access": "Akses",
+        "behavior": "Perilaku",
+        "security": "Keamanan"
+      },
       "validation": {
         "connected": "Terhubung",
         "configured": "Dikonfigurasi manual",
         "needs_setup": "Perlu penyiapan",
-        "invalid": "Tidak valid",
+        "invalid": "Koneksi gagal",
         "unsupported": "Penyiapan manual"
-      }
+      },
+      "validationMessages": {
+        "connected": "Koneksi terverifikasi.",
+        "unverified": "Koneksi belum terverifikasi.",
+        "missing": "Lengkapi kolom wajib.",
+        "invalid": "Pemeriksaan koneksi gagal.",
+        "unsupported": "Kanal ini belum mendukung pemeriksaan koneksi.",
+        "present": "Terisi",
+        "required": "Wajib",
+        "manual": "Kanal ini belum mendukung pemeriksaan koneksi."
+      },
+      "search": "Cari kanal",
+      "filterEnabled": "Aktif",
+      "noResults": "Tidak ada kanal yang cocok",
+      "install": "Pasang",
+      "installChannel": "Pasang {{name}}",
+      "noInstallNeeded": "Tidak perlu dipasang",
+      "installNeeded": "Memerlukan dependensi"
     },
     "nanobotFeatures": {
       "enabled": "Aktif",
@@ -849,16 +883,61 @@
       "installSupport": "Pasang paket yang diperlukan",
       "installConfirmTitle": "Pasang paket yang diperlukan {{name}}?",
       "installConfirmDescription": "nanobot akan memasang paket yang diperlukan, lalu mengaktifkan {{name}}.",
+      "installOnlyConfirmDescription": "nanobot akan menginstal dukungan yang dibutuhkan {{name}}. Anda dapat menghubungkannya setelah instalasi.",
       "installConfirmAction": "Instal dan aktifkan",
+      "installOnlyConfirmAction": "Instal dukungan",
       "websocketRequired": "Wajib untuk WebUI",
       "channelDisabled": "Kanal dinonaktifkan",
       "notEnabled": "Belum aktif"
     },
     "automations": {
+      "taskInfo": "Informasi tugas",
+      "runDetails": {
+        "loading": "Memuat respons…",
+        "loadError": "Respons tidak dapat dimuat.",
+        "retry": "Coba lagi",
+        "emptyOutput": "Tidak ada respons yang dihasilkan.",
+        "result": "Hasil",
+        "duration": "Durasi",
+        "noOutput": "Catatan ini tidak menyimpan teks respons."
+      },
+      "create": "Buat otomatisasi",
+      "createPrompt": "Apa yang ingin kamu otomatisasi dengan nanobot?",
+      "createInput": "Jelaskan otomatisasi",
+      "errors": {
+        "legacyMissingDestination": "Otomatisasi lama ini tidak memiliki tujuan pengiriman. Buat ulang dari chat terkait untuk melanjutkan."
+      },
+      "calendar": {
+        "previousMonth": "Bulan sebelumnya",
+        "nextMonth": "Bulan berikutnya",
+        "today": "Hari ini",
+        "planned": "Terjadwal",
+        "recorded": "Tercatat",
+        "more": "+{{count}} lainnya",
+        "less": "Tampilkan lebih sedikit",
+        "noEntries": "Tidak ada eksekusi bulan ini."
+      },
+      "yourTasks": "Otomatisasi Anda",
+      "systemTasks": "Tugas sistem",
+      "views": {
+        "label": "Tampilan otomatisasi",
+        "tasks": "Tugas",
+        "calendar": "Kalender"
+      },
+      "filter": "Filter",
+      "filteredBy": "Filter: {{status}}",
+      "commandCondition": "Dipicu oleh perintah",
+      "instructions": "Instruksi",
+      "done": "Selesai",
+      "moreDetails": "Detail lainnya",
+      "moreActions": "Tindakan lainnya",
+      "neverRun": "Belum dijalankan",
+      "skipped": "Dilewati",
+      "oneShotHint": "Dihapus setelah dijalankan",
       "filters": {
         "all": "Semua",
         "active": "Aktif",
-        "paused": "Dijeda",
+        "paused": "Dinonaktifkan",
         "failed": "Perlu ditangani",
         "system": "Sistem"
       },
@@ -868,12 +947,11 @@
         "updated": "Diperbarui",
         "name": "Nama"
       },
-      "search": "Cari tugas, pesan, chat terkait, atau jadwal",
       "queue": "Antrean",
       "loading": "Memuat otomasi...",
       "noMatches": "Tidak ada otomasi yang cocok dengan tampilan ini.",
       "empty": "Belum ada otomasi.",
-      "emptyHint": "Buat otomatisasi di chat agar konteks yang tepat tetap tersimpan.",
+      "emptyHint": "Beri tahu nanobot di chat apa yang ingin Anda jalankan secara terjadwal.",
       "emptyAction": "Buka chat",
       "clearFilters": "Hapus filter",
       "oneShot": "Satu kali",
@@ -887,8 +965,8 @@
         "updated": "Diperbarui"
       },
       "runNow": "Jalankan sekarang",
-      "pause": "Jeda",
-      "resume": "Lanjutkan",
+      "pause": "Nonaktifkan",
+      "resume": "Aktifkan",
       "edit": "Ubah",
       "delete": "Hapus",
       "protected": "Terlindungi",
@@ -902,7 +980,7 @@
       "status": {
         "system": "Sistem",
         "running": "Sedang berjalan",
-        "paused": "Dijeda",
+        "paused": "Dinonaktifkan",
         "failed": "Gagal",
         "completed": "Selesai",
         "noSchedule": "Tanpa jadwal",
@@ -914,28 +992,17 @@
       },
       "channels": {
         "api": "API",
-        "cli": "CLI",
-        "dingtalk": "DingTalk",
-        "discord": "Discord",
-        "email": "Email",
-        "feishu": "Feishu",
-        "matrix": "Matrix",
-        "msteams": "Microsoft Teams",
-        "qq": "QQ",
-        "slack": "Slack",
-        "telegram": "Telegram",
-        "wechat": "WeChat",
-        "wecom": "WeCom",
-        "weixin": "WeChat",
-        "whatsapp": "WhatsApp"
+        "cli": "CLI"
       },
       "schedule": {
+        "weeklyAt": "Setiap {{day}} pukul {{time}}",
         "at": "Pada {{time}}",
         "every": "Setiap {{duration}}",
         "cron": "Cron {{expr}}",
-        "cronWithTz": "Cron {{expr}} · {{tz}}",
-        "withTz": "{{summary}} · {{tz}}",
+        "cronWithTz": "Cron {{expr}} ({{tz}})",
+        "withTz": "{{summary}} ({{tz}})",
         "dailyAt": "Setiap hari pukul {{time}}",
+        "monthlyAt": "Setiap tanggal {{day}} pukul {{time}}",
         "weekdaysAt": "Senin–Jumat pukul {{time}}",
         "hourlyAt": "Setiap jam pada menit {{minute}}",
         "hourlyWindow": "Setiap jam dari {{start}} hingga {{end}}, pada menit {{minute}}",
@@ -943,7 +1010,7 @@
         "custom": "Jadwal khusus"
       },
       "next": {
-        "paused": "Dijeda",
+        "paused": "Dinonaktifkan",
         "pending": "Sedang berjalan",
         "local": "Menunggu pemicu",
         "none": "Tidak ada jadwal berikutnya"
@@ -961,7 +1028,10 @@
         "unit": "Unit",
         "cronExpression": "Ekspresi cron",
         "timezone": "Zona waktu",
-        "runAt": "Jalankan pada"
+        "runAt": "Jalankan pada",
+        "runDate": "Tanggal eksekusi",
+        "runTime": "Waktu eksekusi",
+        "chooseDate": "Pilih tanggal"
       },
       "scheduleTypes": {
         "every": "Interval",
@@ -1164,7 +1234,7 @@
       "at": "{{time}}",
       "every": "Setiap {{duration}}",
       "cron": "Cron {{expr}}",
-      "cronWithTz": "Cron {{expr}} · {{tz}}",
+      "cronWithTz": "Cron {{expr}} ({{tz}})",
       "local": "Pemicu lokal",
       "unknown": "Jadwal khusus"
     },
@@ -1267,12 +1337,13 @@
       "loading": "Memuat otomasi...",
       "loadFailed": "Tidak dapat memuat otomasi.",
       "empty": "Belum ada otomasi dalam sesi ini.",
+      "openCalendar": "Lihat semua di kalender",
       "disabled": "Mati",
       "schedule": {
         "at": "Pada {{time}}",
         "every": "Setiap {{duration}}",
         "cron": "Cron {{expr}}",
-        "cronWithTz": "Cron {{expr}} · {{tz}}",
+        "cronWithTz": "Cron {{expr}} ({{tz}})",
         "local": "Pemicu lokal",
         "unknown": "Jadwal khusus"
       },
@@ -1549,6 +1620,8 @@
     "activityWorkingFor": "Memproses selama {{duration}}",
     "activityWorked": "Selesai memproses",
     "activityWorkedFor": "Diproses selama {{duration}}",
+    "traceDetailsLoadFailed": "Detail aktivitas lengkap tidak dapat dimuat.",
+    "retryTraceDetails": "Coba lagi",
     "retryConnection": "Koneksi gagal",
     "retryTimeout": "Waktu respons model habis",
     "retryRateLimit": "Batas permintaan tercapai",

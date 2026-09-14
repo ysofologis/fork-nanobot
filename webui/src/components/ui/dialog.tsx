@@ -12,6 +12,7 @@ import { FloatingPortalContext } from "@/components/ui/floating-portal";
 
 const Dialog = DialogPrimitive.Root;
 const DialogTrigger = DialogPrimitive.Trigger;
+const DialogClose = DialogPrimitive.Close;
 const DialogPortal = DialogPrimitive.Portal;
 export const DialogLayoutContext = React.createContext<HTMLElement | null>(null);
 
@@ -23,6 +24,7 @@ const DialogOverlay = React.forwardRef<
     ref={ref}
     className={cn(
       modalOverlayClassName,
+      "motion-reduce:animate-none",
       className,
     )}
     {...props}
@@ -30,15 +32,30 @@ const DialogOverlay = React.forwardRef<
 ));
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 
+// The portal's presence ref must reach the animated content, not the plain
+// positioning wrapper; otherwise the wrapper unmounts before the exit finishes.
+const DialogPositionedContent = React.forwardRef<
+  React.ElementRef<typeof DialogPrimitive.Content>,
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
+    positionerStyle?: React.CSSProperties;
+  }
+>(({ positionerStyle, ...props }, ref) => (
+  <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={positionerStyle}>
+    <DialogPrimitive.Content ref={ref} {...props} />
+  </div>
+));
+DialogPositionedContent.displayName = "DialogPositionedContent";
+
 interface DialogContentProps
   extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
   showCloseButton?: boolean;
+  overlayClassName?: string;
 }
 
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   DialogContentProps
->(({ className, children, showCloseButton = true, onOpenAutoFocus, ...props }, ref) => {
+>(({ className, children, showCloseButton = true, overlayClassName, onOpenAutoFocus, ...props }, ref) => {
   const { t } = useTranslation();
   const [container, setContainer] = React.useState<HTMLDivElement | null>(null);
   const contentNode = React.useRef<HTMLDivElement | null>(null);
@@ -73,9 +90,9 @@ const DialogContent = React.forwardRef<
   }, [ref]);
   return (
     <DialogPortal>
-      <DialogOverlay />
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={layout}>
-        <DialogPrimitive.Content
+      <DialogOverlay className={overlayClassName} />
+        <DialogPositionedContent
+          positionerStyle={layout}
           ref={contentRef}
           onOpenAutoFocus={(event) => {
             if (onOpenAutoFocus) onOpenAutoFocus(event);
@@ -86,7 +103,7 @@ const DialogContent = React.forwardRef<
           }}
           className={cn(
             modalSurfaceClassName,
-            "relative grid w-full max-w-lg origin-center gap-4 rounded-modal p-6 duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
+            "relative grid w-full max-w-lg origin-center gap-4 rounded-modal p-6 duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 motion-reduce:animate-none",
             className,
           )}
           {...props}
@@ -95,13 +112,12 @@ const DialogContent = React.forwardRef<
             {children}
           </FloatingPortalContext.Provider>
           {showCloseButton ? (
-            <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
+            <DialogPrimitive.Close className="absolute right-2.5 top-2.5 grid h-7 w-7 place-items-center rounded-full text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground active:bg-muted/80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none">
               <X className="h-4 w-4" />
               <span className="sr-only">{t("common.close")}</span>
             </DialogPrimitive.Close>
           ) : null}
-        </DialogPrimitive.Content>
-      </div>
+        </DialogPositionedContent>
     </DialogPortal>
   );
 });
@@ -165,6 +181,7 @@ DialogDescription.displayName = DialogPrimitive.Description.displayName;
 export {
   Dialog,
   DialogTrigger,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
