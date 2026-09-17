@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from agent.session_helpers import run_session
+from tests.agent.session_helpers import run_session  # upstream: tests/agent/session_helpers.py; tests/ is on sys.path under pytest
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import InboundMessage
