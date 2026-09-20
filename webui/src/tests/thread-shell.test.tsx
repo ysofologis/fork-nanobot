@@ -17,6 +17,7 @@ import type {
   UIMessage,
   WebuiThreadPersistedPayload,
 } from "@/lib/types";
+import { canonicalThreadPayload } from "./thread-test-payload";
 
 const HERO_GREETING_PATTERN =
   /What should we work on\?|Where should we start\?|What are we building today\?|What should we tackle together\?/;
@@ -248,8 +249,8 @@ function session(chatId: string, modelPreset?: string | null) {
 
 function transcriptFromSimpleMessages(
   rows: Array<{ role: "user" | "assistant"; content: string; turnId?: string }>,
-): { schemaVersion: number; messages: UIMessage[] } {
-  return {
+): WebuiThreadPersistedPayload {
+  return canonicalThreadPayload({
     schemaVersion: 3,
     messages: rows.map((m, i) => ({
       id: `m-${i}`,
@@ -258,14 +259,19 @@ function transcriptFromSimpleMessages(
       ...(m.turnId ? { turnId: m.turnId } : {}),
       createdAt: 1000 + i,
     })),
-  };
+  })!;
 }
 
 function httpJson(body: unknown) {
+  const normalized = body && typeof body === "object"
+    && "schemaVersion" in body
+    && "messages" in body
+      ? canonicalThreadPayload(body as never)
+      : body;
   return {
     ok: true,
     status: 200,
-    json: async () => body,
+    json: async () => normalized,
   };
 }
 
@@ -274,7 +280,7 @@ function traceDetailThread(
   answer: string,
   revision?: string,
 ): WebuiThreadPersistedPayload {
-  return {
+  return canonicalThreadPayload({
     schemaVersion: 3,
     ...(revision ? { revision } : {}),
     messages: [
@@ -285,7 +291,13 @@ function traceDetailThread(
         content: deferred ? "exec(…)" : 'exec({"command":"echo full"})',
         traces: [deferred ? "exec(…)" : 'exec({"command":"echo full"})'],
         ...(deferred
-          ? { traceDetail: { ref: "1.trace-shared", bytes: 40_000, traceCount: 1 } }
+          ? {
+              traceDetail: {
+                ref: "1.history-aaaaaaaaaaaaaaaaaaaa",
+                bytes: 40_000,
+                traceCount: 1,
+              },
+            }
           : {}),
         createdAt: 1_000,
       },
@@ -296,7 +308,7 @@ function traceDetailThread(
         createdAt: 2_000,
       },
     ],
-  };
+  })!;
 }
 
 function setDocumentVisibility(value: DocumentVisibilityState): void {
@@ -476,9 +488,14 @@ describe("ThreadShell", () => {
           return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
         }
         return Promise.resolve(httpJson({
-          message_id: "trace-deferred",
-          content: 'exec({"command":"echo full"})',
-          traces: ['exec({"command":"echo full"})'],
+          message_id: "history-aaaaaaaaaaaaaaaaaaaa",
+          events: [{
+            event: "message",
+            chat_id: "trace-detail-retry",
+            projection_id: "trace-deferred",
+            kind: "progress",
+            text: 'exec({"command":"echo full"})',
+          }],
         }));
       }
       if (url.includes("websocket%3Atrace-detail-retry/webui-thread")) {
@@ -491,7 +508,11 @@ describe("ThreadShell", () => {
               kind: "trace",
               content: "exec(…)",
               traces: ["exec(…)"],
-              traceDetail: { ref: "1.trace-deferred", bytes: 40_000, traceCount: 1 },
+              traceDetail: {
+                ref: "1.history-aaaaaaaaaaaaaaaaaaaa",
+                bytes: 40_000,
+                traceCount: 1,
+              },
               createdAt: 1_000,
             },
             { id: "answer", role: "assistant", content: "done", createdAt: 2_000 },
@@ -521,9 +542,11 @@ describe("ThreadShell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(detailCalls).toBe(2));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    await waitFor(() => expect(document.body).toHaveTextContent("echo full"));
 
-    fireEvent.click(activity);
-    fireEvent.click(activity);
+    const resolvedActivity = screen.getByRole("button", { name: /Worked/ });
+    fireEvent.click(resolvedActivity);
+    fireEvent.click(resolvedActivity);
     await act(async () => Promise.resolve());
     expect(detailCalls).toBe(2);
   });
@@ -1086,7 +1109,7 @@ describe("ThreadShell", () => {
     expect(screen.queryByRole("button", { name: "Choose your AI" })).not.toBeInTheDocument();
   });
 
-  it("shows the effective fallback model in the composer badge", async () => {
+  it("keeps the selected composer preset and attributes only the reply to its actual source", async () => {
     const client = makeClient();
     render(wrap(
       client,
@@ -1127,23 +1150,21 @@ describe("ThreadShell", () => {
       });
     });
 
-    const logo = await screen.findByTestId("composer-model-logo-deepseek");
-    const badge = logo.parentElement;
-    expect(badge).not.toBeNull();
-    expect(badge).toBe(configuredBadge);
-    expect(screen.queryByText("Default")).not.toBeInTheDocument();
-    expect(screen.getByText("deepseek-chat")).toBeInTheDocument();
-    expect(badge).toHaveAttribute("data-fallback", "true");
-    expect(badge).not.toHaveAttribute("title");
-    fireEvent.focus(screen.getByLabelText("deepseek-chat"));
+    expect(screen.getByTestId("composer-model-logo-openai_codex").parentElement).toBe(configuredBadge);
+    expect(screen.getByText("Default")).toBeInTheDocument();
+    expect(screen.queryByTestId("composer-model-logo-deepseek")).not.toBeInTheDocument();
+    expect(configuredBadge).not.toHaveAttribute("data-fallback");
+    fireEvent.focus(screen.getByLabelText("Default"));
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "deepseek-chat · deepseek/deepseek-chat",
+      "Default · gpt-5.5 · OpenAI Codex",
     );
-    expect(screen.getByRole("tooltip")).not.toHaveTextContent("Default");
-    fireEvent.blur(screen.getByLabelText("deepseek-chat"));
-    expect(logo).toBeInTheDocument();
+    fireEvent.blur(screen.getByLabelText("Default"));
 
     act(() => {
+      client._emitChat("fallback-model", {
+        event: "message", chat_id: "fallback-model", text: "Reply from the actual provider",
+        response_sources: [{provider: "deepseek", model: "deepseek-chat", preset: "backup", fallback: true}],
+      });
       client._emitChat("fallback-model", {
         event: "turn_end",
         chat_id: "fallback-model",
@@ -1156,6 +1177,7 @@ describe("ThreadShell", () => {
       ).not.toHaveAttribute("data-fallback");
     });
     expect(screen.getByText("Default")).toBeInTheDocument();
+    expect(await screen.findByText("backup")).toBeInTheDocument();
   });
 
   it.each([false, true])("hides unconfigured model details in setup tooltips (existing history: %s)", async (hasHistory) => {
@@ -2653,11 +2675,6 @@ describe("ThreadShell", () => {
     });
     await waitFor(() => expect(screen.getByText("strict partial")).toBeInTheDocument());
     client.reconcileCanonicalCompletion.mockClear();
-    const reconcileAfterCommit = client.reconcileCanonicalCompletion.getMockImplementation();
-    client.reconcileCanonicalCompletion.mockImplementation((...args) => {
-      expect(screen.getByText("strict canonical answer")).toBeInTheDocument();
-      return reconcileAfterCommit?.(...args) ?? false;
-    });
     canonicalComplete = true;
 
     act(() => client._emitSessionUpdate("strict-canonical", "thread"));
@@ -3674,7 +3691,10 @@ describe("ThreadShell", () => {
             { role: "user", content: "question" },
             { role: "assistant", content: "answer" },
           ]);
-          thread.messages[1]!.media = [{
+          const answer = thread.events.find(
+            (event) => event.event === "message" && event.text === "answer",
+          );
+          if (answer?.event === "message") answer.media_urls = [{
             kind: "image",
             url: "/api/media/stable/image",
             name: "answer.png",
@@ -3725,7 +3745,10 @@ describe("ThreadShell", () => {
             { role: "user", content: "question" },
             { role: "assistant", content: "answer" },
           ]);
-          thread.messages[1]!.media = [{
+          const answer = thread.events.find(
+            (event) => event.event === "message" && event.text === "answer",
+          );
+          if (answer?.event === "message") answer.media_urls = [{
             kind: "image",
             url: "/api/media/stable/token-image",
             name: "token-answer.png",

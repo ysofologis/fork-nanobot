@@ -86,6 +86,7 @@ from nanobot.session.recovery import (
     RECOVERY_INBOUND_METADATA_KEY,
     RecoveryAdmission,
     acknowledge_pending_followups,
+    pending_followups,
     record_pending_followup,
     restore_pending_interruption,
     restore_runtime_checkpoint,
@@ -410,6 +411,16 @@ class AgentLoop:
         self.tools = tool_registry if tool_registry is not None else ToolRegistry()
         self._exec_session_manager = ExecSessionManager()
         self.runner = AgentRunner()
+        self.consolidator = Consolidator(
+            store=self.context.memory,
+            sessions=self.sessions,
+            build_messages=self.context.build_messages,
+            get_tool_definitions=self.tools.get_definitions,
+            resolve_prompt_context=PersistedPromptContextResolver(
+                workspace_scopes=self.workspace_scopes,
+                unified_session=unified_session,
+            ),
+        )
         self.subagents = SubagentManager(
             workspace=workspace,
             bus=bus,
@@ -419,6 +430,7 @@ class AgentLoop:
             disabled_skills=disabled_skills,
             max_iterations=self.max_iterations,
             max_concurrent_subagents=max_concurrent_subagents,
+            consolidator=self.consolidator,
         )
         self._unified_session = unified_session
         self._running = False
@@ -452,16 +464,6 @@ class AgentLoop:
         _max = int(os.environ.get("NANOBOT_MAX_CONCURRENT_REQUESTS", "0"))
         self._concurrency_gate: asyncio.Semaphore | None = (
             asyncio.Semaphore(_max) if _max > 0 else None
-        )
-        self.consolidator = Consolidator(
-            store=self.context.memory,
-            sessions=self.sessions,
-            build_messages=self.context.build_messages,
-            get_tool_definitions=self.tools.get_definitions,
-            resolve_prompt_context=PersistedPromptContextResolver(
-                workspace_scopes=self.workspace_scopes,
-                unified_session=unified_session,
-            ),
         )
         self.auto_compact = AutoCompact(
             sessions=self.sessions,
@@ -889,6 +891,19 @@ class AgentLoop:
 
         Returns the total number of cancelled tasks, subagents, and exec sessions.
         """
+        journal_session = self.sessions.get_cached(key) or self.sessions.read_session_snapshot(key)
+        journaled_followup_ids = (
+            tuple(
+                followup_id
+                for followup in pending_followups(journal_session)
+                if isinstance(
+                    followup_id := followup.metadata.get(PENDING_FOLLOWUP_ID_KEY),
+                    str,
+                )
+            )
+            if journal_session is not None
+            else ()
+        )
         pending = self._pending_queues.get(key)
         tasks = tuple(self._active_tasks.pop(key, set()))
         cancelled = sum(1 for t in tasks if not t.done() and t.cancel())
@@ -900,6 +915,13 @@ class AgentLoop:
             # cleanup handler. Only reclaim that worker's original inbox.
             self._pending_queues.pop(key, None)
             await self._cancel_pending_messages(key, pending, asyncio.CancelledError())
+        if journaled_followup_ids and journal_session is not None:
+            # Explicit session cancellation owns the follow-ups accepted before
+            # it began. Gateway shutdown uses aclose() directly and keeps this
+            # journal intact for startup recovery.
+            current_session = self.sessions.get_cached(key) or journal_session
+            acknowledge_pending_followups(current_session, journaled_followup_ids)
+            self.sessions.save(current_session)
         sub_cancelled = await self.subagents.cancel_by_session(key)
         exec_cancelled = await self._exec_session_manager.terminate_by_owner(key)
         return cancelled + sub_cancelled + exec_cancelled
@@ -1159,6 +1181,7 @@ class AgentLoop:
             runtime=runtime,
         )
         active_session_key = session.key if session else request_ctx.session_key
+        consolidation_session_key = active_session_key or "agent:transient"
         request_metadata = request_ctx.metadata
         effective_scope = self.workspace_scopes.for_turn(
             channel=request_ctx.channel,
@@ -1230,25 +1253,19 @@ class AgentLoop:
                 session_key=session.key if session else None,
                 provider_retry_mode=self.provider_retry_mode,
                 checkpoint_callback=_checkpoint,
-                consolidate_history=(
-                    partial(
-                        self.consolidator.summarize_transcript,
-                        runtime=runtime,
-                        session_key=session.key,
-                        tools=effective_tools.get_definitions(),
-                    )
-                    if session is not None and not ephemeral
-                    else None
+                consolidate_history=partial(
+                    self.consolidator.summarize_transcript,
+                    runtime=runtime,
+                    session_key=consolidation_session_key,
+                    tools=effective_tools.get_definitions(),
+                    persist=session is not None and not ephemeral,
                 ),
-                consolidate_provider_compaction=(
-                    partial(
-                        self.consolidator.summarize_provider_compaction,
-                        runtime=runtime,
-                        session_key=session.key,
-                        tools=effective_tools.get_definitions(),
-                    )
-                    if session is not None and not ephemeral
-                    else None
+                consolidate_provider_compaction=partial(
+                    self.consolidator.summarize_provider_compaction,
+                    runtime=runtime,
+                    session_key=consolidation_session_key,
+                    tools=effective_tools.get_definitions(),
+                    persist=session is not None and not ephemeral,
                 ),
                 injection_callback=_drain_pending,
                 terminal_injection_callback=_wait_for_pending,
@@ -1528,7 +1545,7 @@ class AgentLoop:
             async with lock, gate:
                 # A preceding user turn may have completed or blocked the goal
                 # while its older continuation was still waiting in the inbox.
-                if turn_continuation.internal_continuation_inbound(msg.metadata) and not (
+                if turn_continuation.sustained_goal_continuation_inbound(msg.metadata) and not (
                     sustained_goal_active(self.sessions.get_or_create(session_key).metadata)
                 ):
                     return
@@ -2166,7 +2183,7 @@ class AgentLoop:
         self._save_turn(
             session, ctx.all_messages, ctx.save_skip,
             turn_latency_ms=ctx.turn_latency_ms,
-            summary_checkpoint=ctx.summary_checkpoint,
+            summary_checkpoint=None if ctx.ephemeral else ctx.summary_checkpoint,
             input_persisted_early=ctx.input_persisted_early,
         )
         if (
