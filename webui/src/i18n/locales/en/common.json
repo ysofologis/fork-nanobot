@@ -401,6 +401,10 @@
       "voiceInput": "Voice input"
     },
     "models": {
+      "catalogAuthRequired": "Authorization expired. Please sign in again.",
+      "catalogUnavailable": "Could not refresh models. Try again later.",
+      "catalogStale": "Showing cached models; the list may be out of date.",
+      "catalogFallback": "Showing built-in models; the list may be out of date.",
       "selectModel": "Select model",
       "addConfiguration": "Add configuration",
       "newConfiguration": "New model configuration",
@@ -1256,6 +1260,10 @@
       }
     },
     "oauth": {
+      "deviceCode": "Device code",
+      "deviceCodeHelp": "Copy this code and enter it on GitHub. This window will update automatically after authorization.",
+      "waitingForDeviceApproval": "Waiting for GitHub authorization…",
+      "openGitHub": "Open GitHub",
       "authentication": "OAuth authentication",
       "signIn": "Sign in",
       "signingIn": "Signing in...",
@@ -1579,6 +1587,11 @@
       "chooseAI": "Choose your AI",
       "switchModel": "Switch model for this chat",
       "manageModels": "Manage models",
+      "fallbackNotice": "This response used a fallback model: {{model}}.",
+      "checkModelSettings": "Check model settings",
+      "reauthNotice": "{{provider}} authorization expired. Please sign in again.",
+      "reauthFallback": "A fallback model handled this response.",
+      "reauthSettings": "Open model settings",
       "context": {
         "tooltip": "Context {{percent}}%",
         "detailsLabel": "Open context usage",
@@ -1592,8 +1605,8 @@
         "duration": "Generation time"
       },
       "queued": {
-        "label": "Queued guidance",
-        "guide": "Guide",
+        "label": "Waiting to send",
+        "guide": "Send now",
         "delete": "Delete guidance",
         "edit": "Edit guidance",
         "drag": "Drag to reorder"
@@ -1770,6 +1783,7 @@
     }
   },
   "message": {
+    "actions": "Message actions",
     "streaming": "streaming",
     "delivery": {
       "sending": "Sending…",
@@ -1795,6 +1809,10 @@
     "activityWorkingFor": "Working for {{duration}}",
     "activityWorked": "Worked",
     "activityWorkedFor": "Worked for {{duration}}",
+    "collapseActivity": "Collapse activity details",
+    "activityShow": "View activity",
+    "activityShowFor": "View activity {{duration}}",
+    "activityHide": "Hide activity",
     "traceDetailsLoadFailed": "Full activity details could not be loaded.",
     "retryTraceDetails": "Retry",
     "retryConnection": "Connection failed",

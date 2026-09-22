@@ -135,6 +135,7 @@ export function useNanobotStream(
   initialMessages: UIMessage[] = [],
   hasPendingToolCalls = false,
   onTurnEnd?: () => void,
+  onStreamDetach?: (messages: UIMessage[]) => void,
 ): {
   messages: UIMessage[];
   /** Whether ``messages`` belongs to the current ``chatId`` after a session switch. */
@@ -172,7 +173,15 @@ export function useNanobotStream(
   threadVisibleRef.current = threadVisible;
   const { t } = useTranslation();
   const initialRunStartedAt = chatId ? client.getRunStartedAt(chatId) : null;
-  const [messages, setMessages] = useState<UIMessage[]>(initialMessages);
+  const [messages, setRenderedMessages] = useState<UIMessage[]>(initialMessages);
+  const messagesRef = useRef(messages);
+  // Keep received state ahead of React's batched render: navigation can unmount
+  // this hook after a stream flush but before the queued render commits.
+  const setMessages = useCallback<React.Dispatch<React.SetStateAction<UIMessage[]>>>((update) => {
+    const next = typeof update === "function" ? update(messagesRef.current) : update;
+    messagesRef.current = next;
+    setRenderedMessages(next);
+  }, []);
   const [messageOwnerChatId, setMessageOwnerChatId] = useState(chatId);
   /** If history ends in unfinished agent activity, keep the loading spinner alive. */
   const initialStreaming = hasPendingAgentActivity(initialMessages);
@@ -302,7 +311,7 @@ export function useNanobotStream(
         suppressUntilTurnEnd: false,
       };
     }
-  }, [chatId, client]);
+  }, [chatId, client, setMessages]);
 
   useEffect(() => client.onError(applyStreamError), [applyStreamError, client]);
 
@@ -412,7 +421,7 @@ export function useNanobotStream(
       projectionRef.current = projection;
       return projection.messages;
     });
-  }, [applyPendingStreamEvents, chatId, closeActiveAssistantStream]);
+  }, [applyPendingStreamEvents, chatId, closeActiveAssistantStream, setMessages]);
 
   const schedulePendingStreamFlush = useCallback(function schedule() {
     if (streamFrameRef.current !== null || streamTimerRef.current !== null) return;
@@ -443,7 +452,7 @@ export function useNanobotStream(
       lastStreamFlushRef.current = performance.now();
       setMessages((prev) => applyPendingStreamEvents(prev, events));
     });
-  }, [applyPendingStreamEvents]);
+  }, [applyPendingStreamEvents, setMessages]);
 
   useEffect(() => {
     if (threadVisible) {
@@ -497,7 +506,7 @@ export function useNanobotStream(
       setRunStartedAt(null);
       setIsStreaming(false);
     });
-  }, [chatId, client, clearActivitySegment, flushPendingStreamEvents]);
+  }, [chatId, client, clearActivitySegment, flushPendingStreamEvents, setMessages]);
 
   // Reset local state when switching chats. Do not reset on every
   // ``initialMessages`` update: a brand-new chat can receive an empty/404
@@ -520,7 +529,7 @@ export function useNanobotStream(
     clearPendingStreamWork();
     sideChannelTurnIdsRef.current.clear();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId, client, clearActivitySegment, clearPendingStreamWork]);
+  }, [chatId, client, clearActivitySegment, clearPendingStreamWork, setMessages]);
 
   useEffect(() => {
     if (hasPendingToolCalls) setIsStreaming(true);
@@ -543,7 +552,7 @@ export function useNanobotStream(
       projectionRef.current = projection;
       return projection.messages;
     });
-  }, []);
+  }, [setMessages]);
 
   useEffect(() => {
     if (!chatId) return;
@@ -884,11 +893,20 @@ export function useNanobotStream(
     const unsub = client.onChat(chatId, handle);
     return () => {
       unsub();
+      // Navigation may happen before the throttled paint. Snapshot the pending
+      // deltas synchronously while they still belong to this subscription.
+      const pending = pendingStreamEventsRef.current;
+      const snapshot = pending.length > 0
+        ? applyPendingStreamEvents(messagesRef.current, pending)
+        : messagesRef.current;
+      onStreamDetach?.(snapshot);
+      if (pending.length > 0) setMessages(snapshot);
       projectionRef.current = resetThreadProjectionCursor(projectionRef.current);
       clearPendingStreamWork();
     };
   }, [
     applyProjectionEvent,
+    applyPendingStreamEvents,
     applyStreamError,
     chatId,
     closeActiveAssistantStream,
@@ -899,7 +917,9 @@ export function useNanobotStream(
     isSideChannelEvent,
     notifyInBackground,
     onTurnEnd,
+    onStreamDetach,
     schedulePendingStreamFlush,
+    setMessages,
     t,
   ]);
 
@@ -974,7 +994,7 @@ export function useNanobotStream(
       client.sendMessage(chatId, outboundContent, wireMedia, clientOptions);
       return { turnId, userMessageId, sideChannel };
     },
-    [chatId, clearActivitySegment, client, flushPendingStreamEvents],
+    [chatId, clearActivitySegment, client, flushPendingStreamEvents, setMessages],
   );
 
   const stop = useCallback(() => {
@@ -990,7 +1010,7 @@ export function useNanobotStream(
     setRunStartedAt(null);
     client.finishRunLocally(chatId);
     client.sendMessage(chatId, "/stop");
-  }, [chatId, clearActivitySegment, client, flushPendingStreamEvents]);
+  }, [chatId, clearActivitySegment, client, flushPendingStreamEvents, setMessages]);
 
   const reconcileTurnComplete = useCallback(() => {
     clearPendingStreamWork();

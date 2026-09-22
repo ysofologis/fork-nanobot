@@ -515,6 +515,10 @@
       "installing": "Installation des dépendances…"
     },
     "models": {
+      "catalogAuthRequired": "L’autorisation a expiré. Veuillez vous reconnecter.",
+      "catalogUnavailable": "Impossible d’actualiser les modèles. Réessayez plus tard.",
+      "catalogStale": "Modèles en cache affichés ; la liste peut ne pas être à jour.",
+      "catalogFallback": "Modèles intégrés affichés ; la liste peut ne pas être à jour.",
       "selectModel": "Choisir un modèle",
       "addConfiguration": "Ajouter une configuration",
       "newConfiguration": "Nouvelle configuration de modèle",
@@ -1056,6 +1060,10 @@
       }
     },
     "oauth": {
+      "deviceCode": "Code de l’appareil",
+      "deviceCodeHelp": "Copiez ce code et saisissez-le sur GitHub. Cette fenêtre se mettra à jour automatiquement après l’autorisation.",
+      "waitingForDeviceApproval": "En attente de l’autorisation GitHub…",
+      "openGitHub": "Ouvrir GitHub",
       "authentication": "Authentification OAuth",
       "signIn": "Se connecter",
       "signingIn": "Connexion...",
@@ -1379,6 +1387,11 @@
       "chooseAI": "Choisissez votre IA",
       "switchModel": "Changer le modèle de cette conversation",
       "manageModels": "Gérer les modèles",
+      "fallbackNotice": "Cette réponse a utilisé un modèle de secours : {{model}}.",
+      "checkModelSettings": "Vérifier les paramètres du modèle",
+      "reauthNotice": "L’autorisation de {{provider}} a expiré. Veuillez vous reconnecter.",
+      "reauthFallback": "Un modèle de secours a traité cette réponse.",
+      "reauthSettings": "Ouvrir les paramètres du modèle",
       "context": {
         "tooltip": "Contexte {{percent}} %",
         "detailsLabel": "Ouvrir l’utilisation du contexte",
@@ -1392,8 +1405,8 @@
         "duration": "Temps de génération"
       },
       "queued": {
-        "label": "Guidage en attente",
-        "guide": "Guider",
+        "label": "En attente d’envoi",
+        "guide": "Envoyer",
         "delete": "Supprimer le guidage",
         "edit": "Modifier le guidage",
         "drag": "Faire glisser pour réordonner"
@@ -1570,6 +1583,7 @@
     }
   },
   "message": {
+    "actions": "Actions du message",
     "streaming": "en cours de génération",
     "delivery": {
       "sending": "Envoi…",
@@ -1623,6 +1637,10 @@
     "activityWorkingFor": "Travail en cours depuis {{duration}}",
     "activityWorked": "Travail terminé",
     "activityWorkedFor": "Travail terminé en {{duration}}",
+    "collapseActivity": "Réduire les détails de l’activité",
+    "activityShow": "Voir l’activité",
+    "activityShowFor": "Voir l’activité {{duration}}",
+    "activityHide": "Masquer l’activité",
     "traceDetailsLoadFailed": "Impossible de charger les détails complets de l’activité.",
     "retryTraceDetails": "Réessayer",
     "retryConnection": "Échec de la connexion",

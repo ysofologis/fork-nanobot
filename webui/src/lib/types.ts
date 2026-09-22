@@ -564,6 +564,7 @@ export interface ProviderModelsPayload {
     | "custom"
     | "unsupported";
   source?: "remote" | "cache" | "stale" | "fallback";
+  error_kind?: "auth_required" | "unavailable" | null;
   models: ProviderModelInfo[];
   model_count: number;
   message?: string | null;
@@ -576,7 +577,8 @@ export interface ProviderOAuthAuthorizationRequired {
   flow_id: string;
   authorization_url: string;
   expires_in: number;
-  completion_input?: "authorization_code" | "callback_url";
+  completion_input?: "authorization_code" | "callback_url" | "device_code";
+  user_code?: string;
 }
 
 export interface ProviderOAuthPending {
@@ -1454,6 +1456,7 @@ export type InboundEvent =
       model_name: string;
       model_preset?: string | null;
       fallback?: boolean;
+      reauth_provider?: string;
     }
   | ({
       event: "turn_end";
