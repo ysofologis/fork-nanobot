@@ -732,6 +732,7 @@ class AgentLoop:
             sender_id=ctx.msg.sender_id,
             turn_id=ctx.turn_id,
             workspace=scope.project_path,
+            log_content=ctx.session.policy.log_content and not ctx.ephemeral,
         )
 
     async def _resolve_runtime_context_for_turn(
@@ -814,6 +815,7 @@ class AgentLoop:
                 sender_id=ctx.msg.sender_id,
                 turn_id=metadata.get("webui_turn_id"),
                 workspace=scope.project_path,
+                log_content=session.policy.log_content,
             ))
             workspace_token = bind_workspace_scope(scope)
             turn_scope_stack = ExitStack()
@@ -983,6 +985,8 @@ class AgentLoop:
         """
         self._sync_subagent_runtime_limits()
 
+        ephemeral = ephemeral or (session is not None and not session.policy.persist)
+
         async def _checkpoint(payload: dict[str, Any]) -> None:
             if session is None:
                 return
@@ -1058,6 +1062,7 @@ class AgentLoop:
                         sender_id=pending_msg.sender_id,
                         turn_id=request_ctx.turn_id,
                         workspace=scope.project_path,
+                        log_content=request_ctx.log_content,
                     )
                     blocks = await self._resolve_runtime_context_for_request(
                         pending_request,
@@ -1165,6 +1170,13 @@ class AgentLoop:
                 request_ctx,
                 workspace=effective_scope.project_path,
             )
+        request_ctx = dataclasses.replace(
+            request_ctx,
+            log_content=(
+                request_ctx.log_content and not ephemeral
+                and (session is None or session.policy.log_content)
+            ),
+        )
         effective_tools = tools or self.tools
         file_state_token = bind_file_states(self._file_state_store.for_session(active_session_key))
         request_token = bind_request_context(request_ctx)
@@ -1203,6 +1215,7 @@ class AgentLoop:
                 turn_hooks=list(hooks or []),
                 ephemeral=ephemeral,
                 run_extra_hooks_for_ephemeral=run_extra_hooks_for_ephemeral,
+                log_content=request_ctx.log_content,
             ))
             result = await self.runner.run(AgentRunSpec(
                 initial_messages=None,
@@ -1214,7 +1227,9 @@ class AgentLoop:
                 transcript_builder=transcript_builder,
                 hook=hook,
                 concurrent_tools=True,
-                workspace=effective_scope.project_path,
+                # Temporary turns use the governor's bounded in-memory results;
+                # never create durable spill files, even before discard/cancellation.
+                workspace=None if ephemeral else effective_scope.project_path,
                 session_key=session.key if session else None,
                 provider_retry_mode=self.provider_retry_mode,
                 checkpoint_callback=_checkpoint,
@@ -1274,7 +1289,10 @@ class AgentLoop:
                 await events.publish(StreamDeltaEvent(content=stream_content))
                 await events.publish(StreamEndEvent())
         elif result.stop_reason == "error":
-            logger.error("LLM returned error: {}", (result.final_content or "")[:200])
+            logger.error(
+                "LLM returned error: {}",
+                (result.final_content or "")[:200] if request_ctx.log_content else "[content hidden]",
+            )
         return result
 
     def _check_expired_sessions_if_due(self) -> None:
@@ -1440,6 +1458,10 @@ class AgentLoop:
                     msg = deferred.pop(0)
                     if not deferred:
                         self._deferred_automation_turns.pop(session_key)
+                session = self.sessions.get_cached(session_key)
+                log_content = session is None or (
+                    session.policy.persist and session.policy.log_content
+                )
                 try:
                     await self._dispatch_one(msg, pending)
                 except asyncio.CancelledError as exc:
@@ -1447,7 +1469,7 @@ class AgentLoop:
                         coordinator.complete(msg, error=exc)
                     raise
                 except Exception:
-                    logger.exception(
+                    logger.opt(exception=log_content).error(
                         "Session worker failed one message for {}; continuing FIFO",
                         session_key,
                     )
@@ -1486,6 +1508,12 @@ class AgentLoop:
     ) -> None:
         """Process one root message while later inputs remain in its session inbox."""
         session_key = self._effective_session_key(msg)
+        # The request context is reset before errors reach this boundary, and
+        # discard may evict the session while a turn is still unwinding.
+        session = self.sessions.get_cached(session_key)
+        log_content = session is None or (
+            session.policy.persist and session.policy.log_content
+        )
         recovery_task_registered = False
         recovery_admission = self._recovery_admission
         current_task: asyncio.Task[Any] | None = None
@@ -1538,10 +1566,9 @@ class AgentLoop:
                     try:
                         await delivery.abort_stream()
                     except Exception:
-                        logger.debug(
+                        logger.opt(exception=log_content).debug(
                             "Could not close stream for cancelled session {}",
                             session_key,
-                            exc_info=True,
                         )
                     # An explicit turn stop materializes partial context so
                     # the next prompt can see completed tool results.  Gateway
@@ -1563,14 +1590,15 @@ class AgentLoop:
                                 key,
                             )
                     except Exception:
-                        logger.debug(
+                        logger.opt(exception=log_content).debug(
                             "Could not restore checkpoint for cancelled session {}",
                             session_key,
-                            exc_info=True,
                         )
                     raise
                 except Exception as exc:
-                    logger.exception("Error processing message for session {}", session_key)
+                    logger.opt(exception=log_content).error(
+                        "Error processing message for session {}", session_key,
+                    )
                     await delivery.fail(
                         publish_completion=not turn_continuation.internal_continuation_pending(
                             msg.metadata
@@ -1749,15 +1777,18 @@ class AgentLoop:
 
             ctx.events = EventSink(track_output, ctx.events.accepts)
 
-        await self._run_turn_stage(ctx, "restore", self._restore_turn)
-        await self._run_turn_stage(ctx, "compact", self._compact_session)
-        if await self._run_turn_stage(ctx, "command", self._dispatch_command):
+        with logger.contextualize(turn_id=ctx.turn_id, session_key=ctx.session_key):
+            await self._run_turn_stage(ctx, "restore", self._restore_turn)
+            await self._run_turn_stage(ctx, "compact", self._compact_session)
+            if await self._run_turn_stage(ctx, "command", self._dispatch_command):
+                self._log_turn_completion(ctx, outcome="command")
+                return ctx.outbound
+            await self._run_turn_stage(ctx, "build", self._build_turn)
+            await self._run_turn_stage(ctx, "run", self._run_turn)
+            await self._run_turn_stage(ctx, "save", self._persist_turn)
+            await self._run_turn_stage(ctx, "respond", self._prepare_outbound)
+            self._log_turn_completion(ctx)
             return ctx.outbound
-        await self._run_turn_stage(ctx, "build", self._build_turn)
-        await self._run_turn_stage(ctx, "run", self._run_turn)
-        await self._run_turn_stage(ctx, "save", self._persist_turn)
-        await self._run_turn_stage(ctx, "respond", self._prepare_outbound)
-        return ctx.outbound
 
     async def _run_turn_stage(
         self,
@@ -1770,21 +1801,75 @@ class AgentLoop:
             result = await handler(ctx)
         except Exception:
             duration_ms = (time.perf_counter() - started_at) * 1000
-            logger.debug(
-                "[turn {}] Stage {} failed after {:.1f}ms",
-                ctx.turn_id,
+            log_content = not ctx.ephemeral and (
+                ctx.session is None
+                or (ctx.session.policy.persist and ctx.session.policy.log_content)
+            )
+            logger.opt(exception=log_content).bind(
+                event="turn_stage",
+                stage=name,
+                outcome="error",
+                duration_ms=round(duration_ms, 1),
+            ).error(
+                "Stage {} failed after {:.1f}ms",
                 name,
                 duration_ms,
             )
             raise
         duration_ms = (time.perf_counter() - started_at) * 1000
-        logger.debug(
-            "[turn {}] Stage {} completed in {:.1f}ms",
-            ctx.turn_id,
+        logger.bind(
+            event="turn_stage",
+            stage=name,
+            outcome="success",
+            duration_ms=round(duration_ms, 1),
+        ).debug(
+            "Stage {} completed in {:.1f}ms",
             name,
             duration_ms,
         )
         return result
+
+    def _log_turn_completion(self, ctx: TurnContext, *, outcome: str | None = None) -> None:
+        duration_ms = ctx.turn_latency_ms
+        if duration_ms is None:
+            duration_ms = max(0, round((time.time() - ctx.turn_wall_started_at) * 1000))
+        runtime = ctx.runtime
+        provider = runtime.provider.provider_name if runtime is not None else None
+        model = runtime.model if runtime is not None else None
+        response_preview = "[content hidden]"
+        if (
+            ctx.kind is TurnKind.USER
+            and ctx.session is not None
+            and not ctx.ephemeral
+            and ctx.session.policy.persist
+            and ctx.session.policy.log_content
+            and ctx.final_content is not None
+        ):
+            response_preview = (
+                f"{ctx.final_content[:120]}..."
+                if len(ctx.final_content) > 120
+                else ctx.final_content
+            )
+        final_outcome = outcome or ctx.stop_reason or "completed"
+        logger.bind(
+            event="turn_completed",
+            outcome=final_outcome,
+            duration_ms=duration_ms,
+            provider=provider,
+            model=model,
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+        ).info(
+            "Turn completed channel={} chat_id={} outcome={} duration_ms={} "
+            "provider={} model={} response={}",
+            ctx.msg.channel,
+            ctx.msg.chat_id,
+            final_outcome,
+            duration_ms,
+            provider or "-",
+            model or "-",
+            response_preview,
+        )
 
     def _assemble_outbound(
         self,
@@ -1793,16 +1878,9 @@ class AgentLoop:
         stop_reason: str,
         streamed_content: bool,
         *,
-        log_content: bool = True,
         turn_latency_ms: int | None = None,
     ) -> OutboundMessage | None:
         """Assemble the final outbound message from turn results."""
-        if log_content:
-            preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
-            logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
-        else:
-            logger.info("Response to {}:{}: [content hidden]", msg.channel, msg.sender_id)
-
         event = None
         meta = dict(msg.metadata or {})
         if streamed_content and stop_reason not in {"error", "tool_error"}:
@@ -2154,7 +2232,6 @@ class AgentLoop:
             cast(str, ctx.final_content),
             ctx.stop_reason,
             ctx.streamed_content,
-            log_content=ctx.require_session().policy.log_content,
             turn_latency_ms=ctx.turn_latency_ms,
         )
         if ctx.ephemeral and ctx.outbound is not None:

@@ -22,6 +22,13 @@ import { canonicalThreadPayload } from "./thread-test-payload";
 const HERO_GREETING_PATTERN =
   /What should we work on\?|Where should we start\?|What are we building today\?|What should we tackle together\?/;
 
+async function openMessageActions(text: string): Promise<HTMLElement> {
+  const message = await screen.findByText(text);
+  const block = message.closest<HTMLElement>("[data-thread-display-unit]")!;
+  fireEvent.click(within(block).getByRole("button", { name: "Message actions" }));
+  return screen.findByRole("dialog", { name: "Message actions" });
+}
+
 function makeClient() {
   const errorHandlers = new Set<(err: StreamError) => void>();
   const statusHandlers = new Set<(status: ConnectionStatus) => void>();
@@ -532,7 +539,8 @@ describe("ThreadShell", () => {
       />,
     ));
 
-    const activity = await screen.findByRole("button", { name: /Worked/ });
+    const menu = await openMessageActions("done");
+    const activity = within(menu).getByRole("button", { name: /Worked/ });
     fireEvent.click(activity);
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Full activity details could not be loaded.",
@@ -544,9 +552,9 @@ describe("ThreadShell", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     await waitFor(() => expect(document.body).toHaveTextContent("echo full"));
 
-    const resolvedActivity = screen.getByRole("button", { name: /Worked/ });
-    fireEvent.click(resolvedActivity);
-    fireEvent.click(resolvedActivity);
+    fireEvent.click(screen.getByRole("button", { name: /Collapse activity details/ }));
+    const reopenedMenu = await openMessageActions("done");
+    fireEvent.click(within(reopenedMenu).getByRole("button", { name: /Worked/ }));
     await act(async () => Promise.resolve());
     expect(detailCalls).toBe(2);
   });
@@ -584,7 +592,7 @@ describe("ThreadShell", () => {
       />,
     );
     const { rerender } = render(view("trace-failure-a"));
-    fireEvent.click(await screen.findByRole("button", { name: /Worked/ }));
+    fireEvent.click(within(await openMessageActions("done-a")).getByRole("button", { name: /Worked/ }));
 
     rerender(view("trace-failure-b"));
     await screen.findByText("done-b");
@@ -624,7 +632,7 @@ describe("ThreadShell", () => {
       />,
     );
     const { rerender } = render(view("visible-failure-a"));
-    fireEvent.click(await screen.findByRole("button", { name: /Worked/ }));
+    fireEvent.click(within(await openMessageActions("failed-a")).getByRole("button", { name: /Worked/ }));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
 
     rerender(view("visible-failure-b"));
@@ -873,7 +881,8 @@ describe("ThreadShell", () => {
       />,
     ));
 
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1));
+    const oldMenu = await openMessageActions("old automation");
+    expect(within(oldMenu).getByRole("button", { name: "Copy" })).toBeInTheDocument();
     const turnId = "turn-automation";
     const startedAt = Date.now() / 1000;
     act(() => client._emitChat("assistant-only-actions", {
@@ -883,7 +892,7 @@ describe("ThreadShell", () => {
       started_at: startedAt,
       turn_id: turnId,
     }));
-    expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Message actions" })).toHaveLength(1);
 
     act(() => client._emitChat("assistant-only-actions", {
       event: "message",
@@ -892,14 +901,18 @@ describe("ThreadShell", () => {
       turn_id: turnId,
     }));
     await waitFor(() => expect(screen.getByText("new automation")).toBeInTheDocument());
-    expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Message actions" })).toHaveLength(1);
+    expect(screen.getByText("new automation").closest("[data-thread-display-unit]"))
+      .not.toHaveAttribute("data-message-context-block");
 
     act(() => client._emitChat("assistant-only-actions", {
       event: "turn_end",
       chat_id: "assistant-only-actions",
       turn_id: turnId,
     }));
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Message actions" })).toHaveLength(2));
+    const newMenu = await openMessageActions("new automation");
+    expect(within(newMenu).getByRole("button", { name: "Copy" })).toBeInTheDocument();
   });
 
   it("does not navigate away when clicking the chat title", async () => {
@@ -1177,7 +1190,98 @@ describe("ThreadShell", () => {
       ).not.toHaveAttribute("data-fallback");
     });
     expect(screen.getByText("Default")).toBeInTheDocument();
+    await openMessageActions("Reply from the actual provider");
     expect(await screen.findByText("backup")).toBeInTheDocument();
+  });
+
+  it("shows a dismissible, session-scoped fallback notice without changing the composer preset", async () => {
+    const client = makeClient();
+    const openSettings = vi.fn();
+    const settings = modelSettings("openai-codex/gpt-5.5", "openai_codex");
+    const tree = (chatId: string) => wrap(client, <ThreadShell
+      session={session(chatId)} title="Fallback notice" onToggleSidebar={() => {}}
+      settingsSnapshot={settings} onOpenModelSettings={openSettings}
+    />);
+    const view = render(tree("notice-a"));
+    await screen.findByTestId("composer-model-logo-openai_codex");
+    const emit = (chatId: string, fallback: boolean) => act(() => client._emitChat(chatId, {
+      event: "turn_model_updated", chat_id: chatId,
+      model_name: fallback ? "xai-grok/grok-4.5" : "openai-codex/gpt-5.5",
+      fallback,
+    }));
+    const notice = () => screen.queryByText("This response used a fallback model: xai-grok/grok-4.5.");
+    emit("notice-b", true);
+    emit("notice-a", false);
+    expect(notice()).not.toBeInTheDocument();
+    emit("notice-a", true);
+    const banner = notice()!.closest('[role="status"]') as HTMLElement;
+    expect(banner).toBeVisible();
+    expect(screen.getByTestId("composer-model-logo-openai_codex")).toBeInTheDocument();
+    expect(banner.textContent).not.toMatch(/expired|sign in/i);
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "Keep my draft" } });
+    fireEvent.click(within(banner).getByRole("button", { name: "Check model settings" }));
+    expect(openSettings).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(banner).getByRole("button", { name: "Dismiss" }));
+    expect(notice()).not.toBeInTheDocument();
+    expect(input).toHaveValue("Keep my draft");
+    expect(client.sendSystemCommand).not.toHaveBeenCalled();
+    emit("notice-a", true);
+    expect(notice()).not.toBeInTheDocument();
+    // A new turn can notify again; it does not inherit the previous dismissal.
+    emit("notice-a", false);
+    emit("notice-a", true);
+    expect(notice()).toBeVisible();
+    view.rerender(tree("notice-b"));
+    expect(notice()).not.toBeInTheDocument();
+    emit("notice-a", true);
+    expect(notice()).not.toBeInTheDocument();
+    view.rerender(tree("notice-a"));
+    await act(async () => {});
+    expect(notice()).not.toBeInTheDocument();
+  });
+
+  it("prioritizes the rejected provider's login over fallback details", async () => {
+    const client = makeClient();
+    const openSettings = vi.fn();
+    render(wrap(client, <ThreadShell session={session("reauth")}
+      title="Auth notice" onToggleSidebar={() => {}} onOpenModelSettings={openSettings}
+      settingsSnapshot={modelSettings("openai-codex/gpt-5.5", "openai_codex")} />));
+    await screen.findByTestId("composer-model-logo-openai_codex");
+    const emit = (reauth_provider?: string) => act(() => client._emitChat("reauth", {
+      event: "turn_model_updated", chat_id: "reauth", model_name: "xai-grok/grok-4.5",
+      fallback: true, reauth_provider,
+    }));
+    emit();
+    const generic = screen.getByText(/This response used a fallback model/).closest('[role="status"]')!;
+    fireEvent.click(within(generic as HTMLElement).getByRole("button", { name: "Dismiss" }));
+    emit("openai_codex");
+    const title = screen.getByText("OpenAI Codex authorization expired. Please sign in again.");
+    expect(title).toBeVisible();
+    expect(screen.getByText("A fallback model handled this response.")).toBeVisible();
+    expect(screen.queryByText(/This response used a fallback model/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open model settings" }));
+    expect(openSettings).toHaveBeenCalledOnce();
+    fireEvent.click(within(title.closest('[role="status"]') as HTMLElement).getByRole("button", { name: "Dismiss" }));
+    emit("openai_codex");
+    emit();
+    expect(screen.queryByText(/authorization expired/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("composer-model-logo-openai_codex")).toBeInTheDocument();
+    expect(client.sendSystemCommand).not.toHaveBeenCalled();
+  });
+
+  it("does not show a live fallback notice just from replayed response attribution", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => Promise.resolve(
+      String(input).includes("/webui-thread") ? httpJson({
+        schemaVersion: 3,
+        messages: [{ id: "old-reply", role: "assistant", content: "Previous reply", createdAt: 1_000,
+          responseSources: [{ provider: "xai", model: "grok-4.5", preset: "backup", fallback: true }] }],
+      }) : { ok: false, status: 404, json: async () => ({}) },
+    )));
+    render(wrap(makeClient(), <ThreadShell session={session("old-fallback")} title="History"
+      onToggleSidebar={() => {}} settingsSnapshot={modelSettings("gpt-5.5", "openai_codex")} />));
+    expect(await screen.findByText("Previous reply")).toBeInTheDocument();
+    expect(screen.queryByText(/This response used a fallback model/)).not.toBeInTheDocument();
   });
 
   it.each([false, true])("hides unconfigured model details in setup tooltips (existing history: %s)", async (hasHistory) => {
@@ -1970,10 +2074,8 @@ describe("ThreadShell", () => {
       ),
     );
 
-    const targetText = await screen.findByText("answer 100");
-    fireEvent.click(within(targetText.closest(".w-full") as HTMLElement).getByRole("button", {
-      name: "Fork",
-    }));
+    const menu = await openMessageActions("answer 100");
+    fireEvent.click(within(menu).getByRole("button", { name: "Fork" }));
 
     await waitFor(() =>
       expect(onForkChat).toHaveBeenCalledWith("long-chat", 101),

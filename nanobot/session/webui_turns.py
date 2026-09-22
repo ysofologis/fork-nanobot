@@ -38,7 +38,7 @@ from nanobot.bus.runtime_events import (
 )
 from nanobot.llm_usage.context import llm_usage_source
 from nanobot.providers.base import LLMProvider, LLMUsage
-from nanobot.providers.fallback_provider import FallbackModelObserver
+from nanobot.providers.fallback_provider import FallbackModelObserver, FallbackModelSelection
 from nanobot.runtime_context import public_history_message
 from nanobot.session.goal_state import goal_state_ws_blob
 from nanobot.session.history_visibility import is_hidden_history_message
@@ -275,7 +275,9 @@ async def maybe_generate_webui_title(
                 retry_mode="standard",
             )
     except Exception:
-        logger.debug("Failed to generate webui session title for {}", session_key, exc_info=True)
+        logger.opt(exception=True).debug(
+            "Failed to generate webui session title for {}", session_key
+        )
         return False
 
     title = clean_generated_title(response.content)
@@ -523,7 +525,7 @@ class WebuiTurnRoutePolicy:
 def build_webui_fallback_model_observer(bus: MessageBus) -> FallbackModelObserver:
     """Translate provider fallback choices into chat-scoped WebUI events."""
 
-    async def _publish(model: str) -> None:
+    async def _publish(selection: FallbackModelSelection) -> None:
         context = current_request_context()
         if context is None or context.channel != "websocket":
             return
@@ -535,13 +537,14 @@ def build_webui_fallback_model_observer(bus: MessageBus) -> FallbackModelObserve
                 channel=context.channel,
                 chat_id=chat_id,
                 event=TurnModelUpdatedEvent(
-                    model=model,
+                    model=selection.model,
                     model_preset=(
                         context.runtime.model_preset
                         if context.runtime is not None
                         else None
                     ),
                     fallback=True,
+                    reauth_provider=selection.reauth_provider,
                 ),
                 metadata=context.metadata,
             )
@@ -649,10 +652,9 @@ class WebuiTurnCoordinator:
                 session_message=public_metadata,
             )
         except (OSError, TypeError, ValueError):
-            logger.warning(
+            logger.opt(exception=True).warning(
                 "Failed to persist session input {}",
                 envelope["message_id"],
-                exc_info=True,
             )
         await self.bus.publish_outbound(outbound_message_for_event(
             channel="websocket",

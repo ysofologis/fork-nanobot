@@ -515,6 +515,10 @@
       "installing": "필수 패키지 설치 중…"
     },
     "models": {
+      "catalogAuthRequired": "인증이 만료되었습니다. 다시 로그인해 주세요.",
+      "catalogUnavailable": "모델 목록을 갱신할 수 없습니다. 나중에 다시 시도해 주세요.",
+      "catalogStale": "캐시된 모델을 표시합니다. 최신 목록이 아닐 수 있습니다.",
+      "catalogFallback": "기본 제공 모델을 표시합니다. 최신 목록이 아닐 수 있습니다.",
       "selectModel": "모델 선택",
       "addConfiguration": "설정 추가",
       "newConfiguration": "새 모델 설정",
@@ -1056,6 +1060,10 @@
       }
     },
     "oauth": {
+      "deviceCode": "기기 코드",
+      "deviceCodeHelp": "이 코드를 복사하여 GitHub에 입력하고 인증하세요. 완료되면 이 창이 자동으로 업데이트됩니다.",
+      "waitingForDeviceApproval": "GitHub 인증을 기다리는 중…",
+      "openGitHub": "GitHub 열기",
       "authentication": "OAuth 인증",
       "signIn": "로그인",
       "signingIn": "로그인 중...",
@@ -1379,6 +1387,11 @@
       "chooseAI": "AI 선택",
       "switchModel": "이 대화에서 사용할 모델 전환",
       "manageModels": "모델 관리",
+      "fallbackNotice": "이 응답은 대체 모델을 사용했습니다: {{model}}.",
+      "checkModelSettings": "모델 설정 확인",
+      "reauthNotice": "{{provider}} 인증이 만료되었습니다. 다시 로그인해 주세요.",
+      "reauthFallback": "이번 응답은 대체 모델이 처리했습니다.",
+      "reauthSettings": "모델 설정 열기",
       "context": {
         "tooltip": "컨텍스트 {{percent}}%",
         "detailsLabel": "컨텍스트 사용량 열기",
@@ -1392,8 +1405,8 @@
         "duration": "생성 시간"
       },
       "queued": {
-        "label": "대기 중인 안내",
-        "guide": "안내",
+        "label": "전송 대기 중",
+        "guide": "지금 보내기",
         "delete": "안내 삭제",
         "edit": "안내 수정",
         "drag": "드래그하여 순서 변경"
@@ -1570,6 +1583,7 @@
     }
   },
   "message": {
+    "actions": "메시지 작업",
     "streaming": "생성 중",
     "delivery": {
       "sending": "전송 중…",
@@ -1623,6 +1637,10 @@
     "activityWorkingFor": "{{duration}} 동안 작업 중",
     "activityWorked": "작업함",
     "activityWorkedFor": "{{duration}} 동안 작업함",
+    "collapseActivity": "활동 세부 정보 접기",
+    "activityShow": "작업 과정 보기",
+    "activityShowFor": "작업 과정 보기 {{duration}}",
+    "activityHide": "작업 과정 숨기기",
     "traceDetailsLoadFailed": "전체 활동 세부 정보를 불러올 수 없습니다.",
     "retryTraceDetails": "다시 시도",
     "retryConnection": "연결 실패",

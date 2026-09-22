@@ -7,6 +7,7 @@ import { FilePreviewAvailabilityProvider } from "@/components/FilePreviewAvailab
 import { FilePreviewPanel } from "@/components/FilePreviewPanel";
 import { SessionHandleLabel } from "@/components/SessionHandleLabel";
 import { PromptNavigator } from "@/components/thread/PromptNavigator";
+import { ModelFallbackNotice } from "@/components/thread/ModelFallbackNotice";
 import { RecoveryNotice } from "@/components/thread/RecoveryNotice";
 import { SessionInfoPopover } from "@/components/thread/SessionInfoPopover";
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
@@ -56,6 +57,7 @@ import type {
 import { projectThreadEvents } from "@/lib/thread-event-projection";
 import { projectWebuiThreadMessages } from "@/lib/thread-display-projection";
 import { ThreadMessageCache } from "@/lib/thread-message-cache";
+import { providerDisplayLabel } from "@/lib/provider-brand";
 import { cn } from "@/lib/utils";
 import { useClient } from "@/providers/ClientProvider";
 
@@ -393,6 +395,7 @@ interface ThreadShellProps {
   title: string;
   temporary?: boolean;
   temporaryChatIds?: readonly string[];
+  messageCache?: ThreadMessageCache;
   temporaryChatEnabled?: boolean;
   onTemporaryChatEnabledChange?: (enabled: boolean) => void;
   onToggleSidebar: () => void;
@@ -607,6 +610,7 @@ export function ThreadShell({
   title,
   temporary = false,
   temporaryChatIds = [],
+  messageCache,
   temporaryChatEnabled = false,
   onTemporaryChatEnabledChange,
   onToggleSidebar,
@@ -690,6 +694,12 @@ export function ThreadShell({
     selectItems: installedMcpPresetsFromPayload,
   });
   const [settings, setSettings] = useState<SettingsPayload | null>(settingsSnapshot);
+  const [modelFallback, setModelFallback] = useState<{
+    chatId: string;
+    model: string;
+    reauthProvider?: string;
+    dismissed: boolean;
+  } | null>(null);
   const [heroGreetingKey, setHeroGreetingKey] = useState(randomHeroGreetingKey);
   const [submittedViewportTurnId, setSubmittedViewportTurnId] = useState<string | null>(null);
   const [filePreviewPath, setFilePreviewPath] = useState<string | null>(null);
@@ -707,9 +717,11 @@ export function ThreadShell({
   const viewportRef = useRef<ThreadViewportHandle | null>(null);
   const activeViewportTurnByChatIdRef = useRef<Map<string, string>>(new Map());
   const knownTemporaryChatIdsRef = useRef(new Set<string>());
-  const messageCacheRef = useRef(new ThreadMessageCache(
+  const localMessageCacheRef = useRef(new ThreadMessageCache(
     (key) => knownTemporaryChatIdsRef.current.has(key),
   ));
+  const messageCacheRef = useRef(messageCache ?? localMessageCacheRef.current);
+  messageCacheRef.current = messageCache ?? localMessageCacheRef.current;
   /** Last chatId we associated with the in-memory thread (for cache-on-switch). */
   const prevChatIdForCacheRef = useRef<string | null>(null);
   /** Skip one message-cache write right after chatId changes (messages may not match yet). */
@@ -739,6 +751,9 @@ export function ThreadShell({
     setSubmittedViewportTurnId(null);
     onTurnEnd?.();
   }, [chatId, onTurnEnd]);
+  const handleStreamDetach = useCallback((snapshot: UIMessage[]) => {
+    if (chatId) messageCacheRef.current.set(chatId, projectWebuiThreadMessages(snapshot));
+  }, [chatId]);
   const {
     messages,
     messagesReady,
@@ -756,7 +771,7 @@ export function ThreadShell({
     setMessages,
     streamError,
     dismissStreamError,
-  } = useNanobotStream(chatId, initial, hasPendingToolCalls, handleTurnEnd);
+  } = useNanobotStream(chatId, initial, hasPendingToolCalls, handleTurnEnd, handleStreamDetach);
 
   const loadTraceDetails = useCallback(async (refs: string[]) => {
     const requestKey = historyKey;
@@ -835,12 +850,13 @@ export function ThreadShell({
     for (const chatId of retained) knownTemporaryChatIdsRef.current.add(chatId);
     for (const cachedChatId of knownTemporaryChatIdsRef.current) {
       if (!retained.has(cachedChatId)) {
-        messageCacheRef.current.delete(cachedChatId);
+        // Shared caches are retained/pruned by the app, not by individual panes.
+        if (!messageCache) messageCacheRef.current.delete(cachedChatId);
         activeViewportTurnByChatIdRef.current.delete(cachedChatId);
         knownTemporaryChatIdsRef.current.delete(cachedChatId);
       }
     }
-  }, [temporaryChatIds]);
+  }, [messageCache, temporaryChatIds]);
 
   const handleQuoteSelection = useCallback((text: string) => {
     setQuotedContext(text);
@@ -964,6 +980,33 @@ export function ThreadShell({
     || settings?.agent.model_preset
     || "default"
   );
+  useEffect(() => {
+    setModelFallback(null);
+    if (!chatId) return;
+    return client.onChat(chatId, (event) => {
+      if (event.event !== "turn_model_updated") return;
+      if (event.fallback !== true) {
+        // The next turn starts with its configured model, not the previous fallback.
+        setModelFallback(null);
+        return;
+      }
+      const model = event.model_name.trim();
+      if (!model) return;
+      const reauthProvider = typeof event.reauth_provider === "string"
+        ? event.reauth_provider.trim() || undefined : undefined;
+      // A tool loop may report the same fallback repeatedly. Closing the notice
+      // lasts until the next turn/model change, without changing the actual preset.
+      setModelFallback((current) => {
+        if (current?.chatId === chatId && current.model === model) {
+          // An explicit auth rejection is actionable even after dismissing a
+          // generic fallback. A circuit-skipped call must not erase that reason.
+          return reauthProvider && reauthProvider !== current.reauthProvider
+            ? { ...current, reauthProvider, dismissed: false } : current;
+        }
+        return { chatId, model, reauthProvider, dismissed: false };
+      });
+    });
+  }, [activeModelPreset, chatId, client]);
   const handleModelPresetChange = useCallback((name: string) => {
     setLocalModelPreset(name);
     if (chatId) {
@@ -1521,6 +1564,17 @@ export function ThreadShell({
 
   const composer = (
     <>
+      {modelFallback?.chatId === chatId && !modelFallback.dismissed ? (
+        <ModelFallbackNotice
+          model={modelFallback.model}
+          reauthProvider={modelFallback.reauthProvider}
+          reauthProviderLabel={modelFallback.reauthProvider
+            ? providerDisplayLabel(settings?.providers ?? [], modelFallback.reauthProvider)
+            : undefined}
+          onOpenSettings={onOpenModelSettings}
+          onDismiss={() => setModelFallback((current) => current && { ...current, dismissed: true })}
+        />
+      ) : null}
       {recoveryState ? (
         <RecoveryNotice
           state={recoveryState}
