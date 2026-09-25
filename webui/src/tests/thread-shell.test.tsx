@@ -935,6 +935,29 @@ describe("ThreadShell", () => {
     expect(onGoHome).not.toHaveBeenCalled();
   });
 
+  it.each([true, false])("waits for parent settings and retries only on failure (success: %s)", async (success) => {
+    const client = makeClient();
+    const settings = modelSettings("deepseek-v4-pro", "deepseek");
+    const settingsRequest = vi.fn(() => Promise.resolve(httpJson(settings)));
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => (
+      String(input).endsWith("/api/settings")
+        ? settingsRequest()
+        : Promise.resolve(httpJson({}))
+    )));
+    const view = (loading: boolean, snapshot: SettingsPayload | null) => wrap(
+      client,
+      <ThreadShell session={null} title="New topic" onToggleSidebar={() => {}}
+        settingsLoading={loading} settingsSnapshot={snapshot} />,
+    );
+    const { rerender } = render(view(true, null));
+    await act(async () => {});
+    expect(settingsRequest).not.toHaveBeenCalled();
+
+    rerender(view(false, success ? settings : null));
+    expect(await screen.findByTestId("composer-model-logo-deepseek")).toBeInTheDocument();
+    expect(settingsRequest).toHaveBeenCalledTimes(success ? 0 : 1);
+  });
+
   it("updates the composer model logo when settings snapshot changes", async () => {
     const client = makeClient();
     const { rerender } = render(
@@ -4452,6 +4475,58 @@ describe("ThreadShell", () => {
     expect(screen.queryByText("from chat a")).not.toBeInTheDocument();
   });
 
+  it("loads mention catalogs only on demand and ignores window focus", async () => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      if (String(input).includes("cli-apps")) return Promise.resolve(httpJson({ apps: [], installed_count: 0 }));
+      if (String(input).includes("mcp-presets")) return Promise.resolve(httpJson({ presets: [], installed_count: 0 }));
+      return originalFetch(input, init);
+    });
+    render(wrap(makeClient(), <ThreadShell
+      session={session("lazy-mentions")}
+      title="Lazy mentions"
+      onToggleSidebar={() => {}}
+      onGoHome={() => {}}
+      onNewChat={() => {}}
+    />));
+    const input = await screen.findByLabelText("Message input");
+    const catalogCalls = () => vi.mocked(fetch).mock.calls.filter(([url]) =>
+      /cli-apps|mcp-presets/.test(String(url)));
+    fireEvent.change(input, { target: { value: "hello", selectionStart: 5 } });
+    fireEvent(window, new Event("focus"));
+    expect(catalogCalls()).toHaveLength(0);
+    fireEvent.change(input, { target: { value: "@", selectionStart: 1 } });
+    await waitFor(() => expect(catalogCalls()).toHaveLength(2));
+    fireEvent(window, new Event("focus"));
+    fireEvent.change(input, { target: { value: "@app", selectionStart: 4 } });
+    fireEvent.change(input, { target: { value: "", selectionStart: 0 } });
+    fireEvent.change(input, { target: { value: "@", selectionStart: 1 } });
+    expect(catalogCalls()).toHaveLength(2);
+  });
+
+  it("retries a failed mention catalog when the user opens mentions again", async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: false, status: 503, json: async () => ({}) } as Response);
+    render(wrap(makeClient(), <ThreadShell
+      session={session("retry-mentions")}
+      title="Retry mentions"
+      onToggleSidebar={() => {}}
+      onGoHome={() => {}}
+      onNewChat={() => {}}
+    />));
+    const input = await screen.findByLabelText("Message input");
+    const catalogCalls = () => vi.mocked(fetch).mock.calls.filter(([url]) =>
+      /cli-apps|mcp-presets/.test(String(url)));
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "@", selectionStart: 1 } });
+    });
+    expect(catalogCalls()).toHaveLength(2);
+    fireEvent.change(input, { target: { value: "", selectionStart: 0 } });
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "@", selectionStart: 1 } });
+    });
+    expect(catalogCalls()).toHaveLength(4);
+  });
+
   it("updates @ CLI app suggestions when settings broadcasts an install", async () => {
     const client = makeClient();
     render(wrap(
@@ -4526,6 +4601,7 @@ describe("ThreadShell", () => {
     ));
 
     const input = await screen.findByLabelText("Message input");
+    fireEvent.change(input, { target: { value: "@", selectionStart: 1 } });
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(
       "/api/settings/cli-apps?installed_only=1",
       expect.anything(),
