@@ -404,6 +404,7 @@ class TestEphemeralDirect:
         provider.get_default_model.return_value = "test-model"
         provider.supports_tools = True
         provider.generation = MagicMock(max_tokens=4096)
+        provider.estimate_prompt_tokens.return_value = (100, "test")
         provider.chat_stream_with_retry = AsyncMock(
             return_value=LLMResponse(content="done", tool_calls=[], finish_reason="stop", usage=None)
         )
@@ -679,6 +680,7 @@ class TestEphemeralHooks:
         provider.get_default_model.return_value = "test-model"
         provider.supports_tools = True
         provider.generation = MagicMock(max_tokens=4096)
+        provider.estimate_prompt_tokens.return_value = (100, "test")
         provider.chat_stream_with_retry = AsyncMock(
             return_value=LLMResponse(
                 content="done", finish_reason="stop", tool_calls=[], usage=None,
