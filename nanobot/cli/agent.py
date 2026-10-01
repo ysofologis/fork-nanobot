@@ -328,10 +328,15 @@ def agent(
                 fut.add_done_callback(lambda f: f.exception() if f.exception() else None)
 
             def _on_ctrl_c() -> None:
-                """Request app shutdown (thread-safe)."""
+                """Request app shutdown (thread-safe).
+
+                Ctrl+C only signals app shutdown — it does NOT cancel the
+                current task. Task cancellation is reserved for ESC
+                (``_on_escape``), which routes through the /stop command
+                and gives the agent a chance to finalize partial work.
+                """
                 shutdown_requested.set()
                 turn_done.set()
-                agent_loop.stop()
                 monitor_stop.set()
 
             async def _consume_outbound() -> None:
