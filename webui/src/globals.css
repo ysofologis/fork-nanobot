@@ -37,9 +37,7 @@
     --session-handle-lightness: 0.5;
     --session-handle-chroma: 0.12;
     --temporary-control-active: #ef8e30;
-    --temporary-accent: 24 95% 53%;
     --temporary-foreground: 17 88% 32%;
-    --temporary-border: 17 88% 40%;
     --radius: 0.4375rem;
     /* Shared shape scale: marks, compact content, controls, and progressively larger surfaces. */
     --radius-mark: 0.25rem;
@@ -91,9 +89,7 @@
     --session-handle-lightness: 0.75;
     --session-handle-chroma: 0.11;
     --temporary-control-active: #ef8e30;
-    --temporary-accent: 24 95% 53%;
     --temporary-foreground: 32 98% 73%;
-    --temporary-border: 27 96% 61%;
     --sidebar: var(--card);
     --sidebar-foreground: 0 0% 98%;
     --sidebar-content: 240 3% 84%;
@@ -124,6 +120,44 @@
   body {
     @apply bg-background text-foreground font-sans antialiased;
     overflow: hidden;
+  }
+
+  #root.visual-viewport {
+    position: fixed;
+    top: var(--app-viewport-top);
+    left: 0;
+    width: 100%;
+    height: var(--app-viewport-height);
+  }
+
+  /* A landscape keyboard can leave less room than the composer needs. Keep
+     navigation reachable and scroll the composer instead of overlapping it. */
+  #root.visual-viewport .workbench-body {
+    min-height: 2.75rem;
+  }
+
+  #root.short-visual-viewport .workbench-composer-footer {
+    max-height: max(0px, calc(var(--app-viewport-height) - 2.75rem));
+    overflow-y: auto;
+  }
+
+  /* Body portals share the viewport owner's short-frame state. A landscape
+     keyboard needs input and results beside each other, not stacked. */
+  @media (min-width: 640px) {
+    body:has(> #root.short-visual-viewport) .session-search-dialog {
+      flex-direction: row;
+    }
+
+    body:has(> #root.short-visual-viewport) .session-search-input {
+      width: 40%;
+      height: auto;
+      border-bottom-width: 0;
+      border-right-width: 1px;
+    }
+
+    body:has(> #root.short-visual-viewport) .session-search-label {
+      @apply sr-only;
+    }
   }
 
   * {
@@ -637,13 +671,11 @@
   /* Split content leaves no margin for floating conversation controls. */
   .thread-workspace:has([data-file-preview-panel]) > * {
     --thread-header-position: relative;
-    --thread-prompt-inset: 1rem;
   }
   /* Keep room for the 49.5rem message column and controls in the side margin. */
   @container thread-workspace (max-width: 72rem) {
     .thread-workspace > * {
       --thread-header-position: relative;
-      --thread-prompt-inset: 1rem;
     }
   }
 
@@ -853,6 +885,14 @@
 }
 
 @media (pointer: coarse) {
+  /* Readable form text avoids Safari's focus zoom without disabling the user's
+     pinch zoom. Keep this after utilities so compact desktop overrides cannot
+     shrink shared form fields on touch devices. Larger chat/search text stays
+     on its own typography; this is not a blanket rule for every input. */
+  .touch-text-input {
+    font-size: max(16px, 1rem);
+  }
+
   .thread-message-row,
   .message-block-menu-trigger,
   [data-message-block-menu] {
@@ -864,6 +904,15 @@
   .touch-target {
     min-width: 2.75rem;
     min-height: 2.75rem;
+  }
+
+  .touch-target.preview-tab-close {
+    opacity: 1;
+  }
+
+  /* Touch users cannot hover a sidebar row to discover its actions. */
+  .sidebar-action-trigger {
+    opacity: 1;
   }
 }
 
@@ -1127,7 +1176,6 @@
    desktop, 4 columns / 16px gutter on mobile. Rows share the same tracks. */
 @layer components {
   .settings-grid {
-    --settings-baseline: 4px;
     --settings-columns: 4;
     --settings-gutter: 16px;
     --settings-margin: 16px;

@@ -1048,7 +1048,7 @@ export const ChatList = memo(function ChatList({
                             >
                             <DropdownMenuTrigger
                               className={cn(
-                                "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sidebar-muted-foreground opacity-0 transition-opacity",
+                                "sidebar-action-trigger touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sidebar-muted-foreground opacity-0 transition-opacity",
                                 "media-hover:hover:bg-sidebar-accent media-hover:hover:text-sidebar-foreground media-hover:group-hover:opacity-100",
                                 "focus-visible:opacity-100 data-[state=open]:opacity-100",
                               )}
@@ -1295,7 +1295,7 @@ function WorkbenchTabHeader({
           >
             <DropdownMenuTrigger
               className={cn(
-                "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+                "sidebar-action-trigger touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
                 "text-sidebar-muted-foreground opacity-0 transition-opacity",
                 "media-hover:hover:bg-sidebar-accent media-hover:hover:text-sidebar-foreground media-hover:group-hover/tab:opacity-100",
                 "focus-visible:opacity-100 data-[state=open]:opacity-100",
@@ -1491,7 +1491,7 @@ function ActivePaneRows({
               >
                 <DropdownMenuTrigger
                   className={cn(
-                    "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sidebar-muted-foreground opacity-0 transition-opacity",
+                    "sidebar-action-trigger touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sidebar-muted-foreground opacity-0 transition-opacity",
                     "media-hover:hover:bg-sidebar-accent media-hover:hover:text-sidebar-foreground media-hover:group-hover/pane:opacity-100",
                     "focus-visible:opacity-100 data-[state=open]:opacity-100",
                   )}
@@ -1787,7 +1787,7 @@ function ProjectGroupHeader({
           >
             <DropdownMenuTrigger
               className={cn(
-                "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sidebar-muted-foreground opacity-0 transition-opacity",
+                "sidebar-action-trigger touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sidebar-muted-foreground opacity-0 transition-opacity",
                 "media-hover:hover:bg-sidebar-accent media-hover:hover:text-sidebar-foreground media-hover:group-hover:opacity-100 focus-visible:opacity-100",
                 "data-[state=open]:opacity-100",
               )}

@@ -389,7 +389,7 @@ export interface UIFileEdit {
   deleted: number;
   approximate?: boolean;
   status: "editing" | "done" | "error";
-  operation?: "edit" | "delete" | string;
+  operation?: "create" | "edit" | "delete" | string;
   binary?: boolean;
   error?: string;
   pending?: boolean;
