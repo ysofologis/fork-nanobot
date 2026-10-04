@@ -688,7 +688,7 @@ export function PaneWorkbench({
       className={cn(
         "thread-workspace relative flex h-full min-h-0 flex-col overflow-hidden bg-background",
         chrome && displayedPanes.length > 1
-          && "[--thread-header-position:relative] [--thread-prompt-inset:1rem]",
+          && "[--thread-header-position:relative]",
       )}
     >
       <TooltipProvider>
@@ -700,7 +700,7 @@ export function PaneWorkbench({
             />
           </header>
         ) : null}
-        <div className="relative min-h-0 flex-1 bg-background">
+        <div className="workbench-body relative min-h-0 flex-1 bg-background">
           <div
             ref={gridRef}
             data-testid="pane-grid"
@@ -837,7 +837,7 @@ export function PaneWorkbench({
         </div>
 
         {chrome ? (
-          <footer className="shrink-0 bg-background px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-4">
+          <footer className="workbench-composer-footer shrink-0 bg-background px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-4">
             <div
               ref={setComposerPortalTarget}
               data-testid="workbench-composer-host"
