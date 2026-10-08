@@ -114,7 +114,11 @@ without changing the original thread.
 On touch devices, sidebar action buttons stay visible with larger touch areas
 for topics, conversation groups, panes, and projects. Tap a title to select it
 or the adjacent action button for its menu. Desktop actions still appear on
-hover or keyboard focus.
+hover or keyboard focus. Press Escape in an action menu to return focus to its
+button and continue with Tab, including from the **Move to** submenu. ArrowLeft
+leaves the submenu and returns to **Move to** without closing the parent menu.
+Choosing Rename instead moves focus into the
+dialog; clicking outside a menu keeps focus at the clicked destination.
 
 Drag a topic within its current sidebar group to keep frequently used work in
 your preferred order. Drag a topic from the sidebar into the composer when you
@@ -234,6 +238,28 @@ by the summary remain in your chat history but are no longer sent to the model
 verbatim. Use `/compact` to compact the current topic's context manually.
 See [Memory](./memory.md) for compaction and Dream consolidation.
 
+### Delegated work
+
+When nanobot delegates work to subagents, a work group appears under the request
+that started it. Progress continues to update after the main reply finishes.
+Completed tasks stay available for inspection, and refreshing or reopening the
+WebUI restores saved progress and results without restarting the work.
+
+Work groups follow the browser's **Activity details** preference: **Auto** opens
+running work and folds it when all tasks finish; **Expanded** keeps it open by
+default. You can also expand or fold a group manually to check individual
+outcomes, including failures and partial results.
+
+Select a task to open its read-only conversation on the right, or across the
+screen on mobile. Read its messages, tool activity, file edits, and results,
+including formatted Markdown. Closing the details leaves the task running; its
+stop button cancels only that task. Give follow-up instructions to nanobot in
+the main conversation.
+
+These controls appear when the connected host supports subagent tasks. See
+[Subagents](./concepts.md#subagents) for cancellation, saved history, and gateway
+restart behavior.
+
 ## Temporary Chats
 
 Use a temporary chat for a conversation that should not be added to nanobot's
@@ -265,11 +291,28 @@ or a result you must retain.
 
 ## Workspace and Access
 
-Use the workspace picker before starting project-specific work. This gives the
-agent the right project context for file paths, shell commands, and topic
-metadata. A locally hosted WebUI opens the operating system's folder chooser
-when one is available; remote deployments use a manual absolute path on the
-nanobot host. The browser's local filesystem is never used for project selection.
+Use the workspace picker to browse folders on the connected nanobot host, enter
+an absolute path, or return to recent and starred projects; favorites persist
+across gateway restarts. The host name appears above saved locations. Project paths refer to
+that machine, not the browser's filesystem.
+
+Use the breadcrumb nodes or Back and Forward controls to navigate. **Last
+visited folder** returns directly to the folder you most recently left,
+restoring its directory columns, selected rows, filter, and scroll positions.
+**Filter this folder** only filters the current directory. Click the empty area
+in the path bar or press **Cmd/Ctrl+Shift+G** to enter a host path; Tab completes
+it and Enter opens it. Click outside the input or press Escape to cancel path
+editing; **Confirm** confirms the edited path.
+Browsing does not change the workspace until you choose **Confirm**.
+**Cancel** leaves the current workspace unchanged. Desktop uses directory
+columns with Shift+wheel horizontal scrolling; narrow screens show one folder
+at a time, with favorites and recent projects under **Saved locations**.
+Directory columns settle on complete rows after scrolling.
+
+On a compatible host without the optional directory-browser capabilities,
+manual path entry remains available. Browse and favorite requests are not sent
+to that host. The gateway still validates the selected workspace and owns its
+access policy.
 
 Selecting a project does not replace the configured agent workspace. The two
 paths have different responsibilities:
@@ -299,11 +342,15 @@ selected project. These tool exceptions do not broaden the browser's file
 preview boundary.
 
 Remote WebUI connections may reduce access for the current workspace and may
-select a different workspace by entering its server-side path. A remote project
-change must use Restricted mode; enabling Full Access remains limited to local
-and native clients.
+select a different workspace by browsing folders or entering its server-side
+path. A remote project change must use Restricted mode; enabling Full Access
+remains limited to local and native clients.
 
 ## Composer
+
+With voice transcription configured, the idle composer uses one button for
+voice input when empty and Send when text or attachments are present; speech
+is transcribed into the draft before sending.
 
 The composer supports plain messages, image attachments, voice input when
 transcription is configured, slash commands, and `@` mentions for installed Apps,

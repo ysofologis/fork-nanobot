@@ -26,6 +26,12 @@ def _make_full_loop(tmp_path: Path) -> AgentLoop:
     provider.get_default_model.return_value = "test-model"
     provider.generation = SimpleNamespace(max_tokens=4096)
     provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="Test title"))
+    # Upstream's ModelRuntimeResolver.aclose() does
+    # ``asyncio.gather(*(provider.aclose() for provider in providers))``,
+    # so each provider's aclose() must be an awaitable. Without this the
+    # gather() call raises ``TypeError: An asyncio.Future, a coroutine or
+    # an awaitable is required`` when aclose() is awaited on the loop.
+    provider.aclose = AsyncMock(return_value=None)
     loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
     WebuiTurnCoordinator(
         bus=loop.bus,

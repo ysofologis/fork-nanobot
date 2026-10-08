@@ -76,7 +76,6 @@ const LOCALIZED_SETTINGS_COPY_KEYS = [
   "settings.sections.capabilities",
   "settings.sections.apps",
   "settings.apps.description",
-  "settings.apps.caption",
   "settings.apps.restartRequired",
   "settings.mcp.connectingAccount",
   "settings.mcp.continueSignIn",
@@ -205,9 +204,6 @@ const LOCALIZED_WORKSPACE_COPY_KEYS = [
   "thread.composer.workspace.full",
   "errors.workspaceScopeRejected.title",
   "errors.workspaceScopeRejected.body",
-  "workspace.dialog.defaultProject",
-  "workspace.dialog.usePath",
-  "workspace.dialog.absolutePathRequired",
 ];
 const LOCALIZED_CHANNEL_SHELL_KEYS = [
   "settings.channels.advanced",

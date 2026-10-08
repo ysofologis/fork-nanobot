@@ -418,9 +418,8 @@ async def test_temporary_chat_is_transient_and_discarded(bus, tmp_path) -> None:
     chat_id = await _new_temporary_chat(channel, connection)
     upload = tmp_path / "temporary-upload.txt"
     upload.write_text("private attachment", encoding="utf-8")
-    channel.gateway.media.store_inbound_attachments = MagicMock(
-        return_value=([str(upload)], None),
-    )
+    channel.gateway.uploads.store.resolve = MagicMock(return_value=[str(upload)])
+    channel.gateway.uploads.store.commit = MagicMock(return_value=[str(upload)])
 
     await channel._dispatch_envelope(
         connection,
@@ -429,7 +428,7 @@ async def test_temporary_chat_is_transient_and_discarded(bus, tmp_path) -> None:
             "type": "message",
             "chat_id": chat_id,
             "content": "read this",
-            "media": [{"data_url": "data:text/plain;base64,cHJpdmF0ZQ=="}],
+            "media": [{"reference": "temporary-upload"}],
             "cli_apps": [{"name": "drawio"}],
             "workspace_scope": {
                 "project_path": str(selected_project),
@@ -4779,7 +4778,6 @@ async def test_bootstrap_exposes_native_surface(bus: MagicMock) -> None:
             bus,
             token_issue_secret="native-secret",
             runtime_surface="native",
-            runtime_capabilities_overrides={"can_pick_folder": True},
         ),
     )
 
@@ -4794,7 +4792,6 @@ async def test_bootstrap_exposes_native_surface(bus: MagicMock) -> None:
         assert response.status_code == 200
         body = response.json()
         assert body["runtime_surface"] == "native"
-        assert body["runtime_capabilities"]["can_pick_folder"] is True
         assert body["runtime_capabilities"]["can_restart_engine"] is True
         assert body["token"].startswith("nbwt_")
         assert body["api_token"].startswith("nbwt_")
