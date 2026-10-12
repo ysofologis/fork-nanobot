@@ -65,6 +65,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
   floatingItemClassName,
+  floatingItemFocusClassName,
   floatingSurfaceElevationClassName,
   floatingSurfaceVisualClassName,
 } from "@/components/ui/floating-surface";
@@ -124,6 +125,7 @@ import {
 import { sessionHandleColor } from "@/lib/session-handle";
 import { requestSkillsRefresh } from "@/lib/skill-events";
 import {
+  isRegisteredSlashCommand,
   isSideChannelLifecycle,
   slashCommandLifecycle,
 } from "@/lib/slash-command";
@@ -1199,7 +1201,10 @@ export function ThreadComposer({
     && !encoding
     && !hasErrors
     && hasComposerContent
-    && !value.trimStart().startsWith("/");
+    // Without command metadata, let the gateway classify slash input immediately.
+    && (slashCommands.length > 0
+      ? !isRegisteredSlashCommand(value, slashCommands)
+      : !value.trimStart().startsWith("/"));
 
   const slashQuery = useMemo(() => {
     if (interactionDisabled || slashMenuDismissed || !value.startsWith("/")) return null;
@@ -2381,7 +2386,6 @@ export function ThreadComposer({
     <WorkspaceAccessToggle
       scope={workspaceScope}
       disabled={interactionDisabled || workspaceScopeDisabled}
-      canUseFullAccess={workspaceControls?.can_use_full_access !== false}
       isHero={isHero}
       onChange={onWorkspaceScopeChange}
     />
@@ -3181,6 +3185,7 @@ function CliAppMentionPalette({
                   }}
                   className={cn(
                     floatingItemClassName,
+                    floatingItemFocusClassName,
                     "touch-target flex min-h-10 w-full items-center gap-2.5 px-2.5 py-1.5 text-left transition-colors",
                     selected
                       ? "bg-foreground/[0.055] text-foreground"
@@ -3329,6 +3334,7 @@ function SlashCommandPalette({
               }}
               className={cn(
                 floatingItemClassName,
+                floatingItemFocusClassName,
                 "flex min-h-[44px] w-full items-center gap-3 px-3 py-2 text-left transition-colors",
                 selected
                   ? "bg-foreground/[0.065] text-foreground dark:bg-white/[0.09]"
