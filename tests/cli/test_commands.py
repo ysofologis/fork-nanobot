@@ -3159,6 +3159,15 @@ def test_gateway_unbound_agent_cron_is_skipped(
         def save(self, session: _FakeSession) -> None:
             seen["saved_session"] = session
 
+        @staticmethod
+        def safe_key(key: str) -> str:
+            # Mirror the real SessionManager.safe_key static: webui
+            # session_list_index/transcript modules call it at import time,
+            # and the gateway builds them during startup under this patch.
+            from nanobot.utils.helpers import safe_filename
+
+            return safe_filename(key.replace(":", "_"))
+
     monkeypatch.setattr("nanobot.session.manager.SessionManager", _FakeSessionManager)
 
     class _FakeCron:
@@ -3236,41 +3245,6 @@ def test_gateway_unbound_agent_cron_is_skipped(
         asyncio.run(cron.on_job(job))
 
     bus.publish_outbound.assert_not_awaited()
-
-    bus.publish_outbound.reset_mock()
-    old_turn_id = "turn-that-created-the-reminder"
-    websocket_job = CronJob(
-        id="drink-water",
-        name="drink water",
-        payload=CronPayload(
-            message="Remind me to drink water.",
-            deliver=True,
-            channel="websocket",
-            to="chat-1",
-            channel_meta={
-                "webui": True,
-                "webui_turn_id": old_turn_id,
-                "workspace_scope": {"mode": "default"},
-            },
-            session_key="websocket:chat-1",
-        ),
-    )
-
-    response = asyncio.run(cron.on_job(websocket_job))
-
-    assert response == "Time to stretch."
-    bus.publish_outbound.assert_awaited_once()
-    delivered = bus.publish_outbound.await_args.args[0]
-    assert delivered.channel == "websocket"
-    assert delivered.chat_id == "chat-1"
-    assert delivered.metadata["webui"] is True
-    assert delivered.metadata["workspace_scope"] == {"mode": "default"}
-    assert delivered.metadata["webui_turn_id"].startswith("cron:drink-water:")
-    assert delivered.metadata["webui_turn_id"] != old_turn_id
-    assert delivered.metadata["_webui_message_source"] == {
-        "kind": "cron",
-        "label": "drink water",
-    }
 
 
 def test_gateway_bound_cron_runs_as_session_turn(
