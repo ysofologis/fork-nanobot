@@ -3,6 +3,7 @@ import type {
   AutomationChatsPayload,
   AutomationChatUpdate,
   AutomationsPayload,
+  AutomaticModelAPIPayload,
   AutomationUpdatePayload,
   ChannelConfigurePayload,
   ChannelConnectPayload,
@@ -1045,13 +1046,36 @@ export async function cancelMcpOAuth(
   );
 }
 
+export async function fetchAutomaticModelAPI(
+  token: string,
+  provider: string,
+  model: string,
+  reasoningEffort: string,
+  base: string = "",
+): Promise<AutomaticModelAPIPayload> {
+  const query = new URLSearchParams({ provider, model, reasoning_effort: reasoningEffort });
+  const payload = await request<unknown>(
+    `${base}/api/settings/model-api?${query}`, token, undefined, API_READ_TIMEOUT_MS,
+  );
+  if (typeof payload !== "object" || payload === null) throw new Error("Invalid model API resolution");
+  const result = payload as Record<string, unknown>;
+  const api = result.api;
+  if (typeof result.provider !== "string" || (
+    api !== "chat_completions" && api !== "responses" && api !== "anthropic_messages"
+    && api !== "bedrock_converse" && api !== "transcription"
+  )) throw new Error("Invalid model API resolution");
+  return { provider: result.provider, api };
+}
+
 export async function fetchProviderModels(
   token: string,
   provider: string,
   base: string = "",
+  options?: { refresh?: boolean },
 ): Promise<ProviderModelsPayload> {
   const query = new URLSearchParams();
   query.set("provider", provider);
+  if (options?.refresh) query.set("refresh", "1");
   return request<ProviderModelsPayload>(
     `${base}/api/settings/provider-models?${query}`,
     token,
@@ -1152,7 +1176,7 @@ export async function fetchSidebarState(
 function modelGenerationSettingsPayload(
   configuration: Pick<
     ModelConfigurationCreate,
-    "maxTokens" | "contextWindowTokens" | "temperature" | "reasoningEffort"
+    "maxTokens" | "contextWindowTokens" | "temperature" | "reasoningEffort" | "api" | "extraHeaders" | "extraQuery" | "extraBody"
   >,
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
@@ -1167,6 +1191,14 @@ function modelGenerationSettingsPayload(
   }
   if (configuration.reasoningEffort !== undefined) {
     payload.reasoning_effort = configuration.reasoningEffort ?? "";
+  }
+  if (configuration.api !== undefined) {
+    payload.api = configuration.api;
+  }
+  for (const [key, field] of [
+    ["extraHeaders", "extra_headers"], ["extraQuery", "extra_query"], ["extraBody", "extra_body"],
+  ] as const) {
+    if (configuration[key] !== undefined) payload[field] = configuration[key];
   }
   return payload;
 }
@@ -1336,6 +1368,8 @@ export async function updateImageGenerationSettings(
       default_aspect_ratio: update.defaultAspectRatio,
       default_image_size: update.defaultImageSize,
       max_images_per_turn: update.maxImagesPerTurn,
+      ...(update.extraHeaders !== undefined ? { extra_headers: update.extraHeaders } : {}),
+      ...(update.extraBody !== undefined ? { extra_body: update.extraBody } : {}),
     },
   );
 }
