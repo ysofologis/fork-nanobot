@@ -824,8 +824,21 @@ materializes partial context, so durability semantics are preserved.
 
 **Removed:**
 - `AgentLoop.schedule_session_save()` — background save scheduling
-- `AgentLoop.await_pending_session_saves()` — test boundary helper
 - `tests/agent/test_async_save.py` — 5 contract tests
+
+**No-op shim retained for upstream tests (added post-cleanup):**
+- `AgentLoop.await_pending_session_saves()` — kept as `async def …: return None`
+  on `AgentLoop`. The upstream regression suite at
+  `tests/agent/test_loop_save_turn.py` (5 tests: Xubin Ren / yeyitech /
+  xzq.xu / tangtaizhong666, April–August 2026) and
+  `tests/command/test_compact_command.py` (chengyongru, 2026-09-17) call
+  `loop.await_pending_session_saves()` between triggering a turn and
+  asserting on the persisted session. Their assertion logic is
+  independent of the drain; the method just returns instantly. Removing
+  the calls would cost us free upstream regression coverage on every
+  future cycle, so the symbol stays. See `nanobot/agent/loop.py` (just
+  after `_persist_turn`); same precedent as `_runtime_checkpoint_cache_dir`
+  in §4.6.
 
 **Behavior preserved:** `_persist_turn` awaits
 `self.sessions.state.finish_turn(session)` directly. Cancellation handlers
@@ -835,6 +848,25 @@ where they need to.
 If a future upstream change reintroduces a slow per-turn write path
 (e.g. a separate compaction flush), Feature 6 could be reborn with the
 same motivation but targeting `_execute` instead of `sessions.save`.
+
+### 6.7 No-op compatibility shim (added 2026-10-20)
+
+During the cycle #17 repair pass we discovered that the cleanup commit had
+left seven upstream-authored tests calling the removed helper. Deleting
+them would have bought us nothing and lost us free regression coverage for
+next cycle's merge. The chosen fix follows the existing precedent for
+`_runtime_checkpoint_cache_dir()` (§4.6): re-export the symbol as a
+no-op async method on `AgentLoop`. `await self.sessions.state.finish_turn()`
+in the current SQLite-backed `_persist_turn` is already synchronous, so
+there is no save queue to drain — `await_pending_session_saves()` simply
+returns.
+
+**Merge playbook update:** if upstream ever deletes the symbol itself
+(e.g. renames the test boundary helper to something else), update the
+shim to delegate to the new name, or drop the shim and let upstream's
+test renames carry the regression suite. Do **not** add real draining
+logic; that would re-introduce the fire-and-forget queue Feature 6 was
+retired *to remove*.
 
 ---
 
