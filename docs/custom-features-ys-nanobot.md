@@ -870,6 +870,128 @@ retired *to remove*.
 
 ---
 
+## Feature 7: Session Handler — `/handler <session-id>` (TUI only)
+
+**Status:** New on `ys-nanobot/improvements` (not yet upstream).
+
+### 7.1 Motivation & design
+
+Inside an interactive TUI session the user sometimes wants to *hand off*
+control to a named session — for example, "let me continue this thread
+under `assistant:qna#01`". The new `/handler` slash command makes that
+explicit:
+
+- `/handler <session-id>` switches the current TUI loop's effective
+  session to the named one, resuming from its last checkpoint.
+- The `<session-id>` argument accepts three equivalent shapes:
+  1. **Canonical:** `assistant:qna#01` (channel + name + `#pack` suffix).
+  2. **WebUI form:** `websocket:assistant:qna:01` (the `websocket:`
+     prefix is stripped and `:` is normalised back to `#` for the pack
+     separator — `#` is the URL fragment delimiter on the WebUI side
+     and gets rewritten to `:` there).
+  3. **Bare:** `qna#01` (resolves against the current channel; uses the
+     channel of the active TUI session as the prefix).
+
+The handler does not transfer conversation history between sessions —
+the *active* session's running turn continues, and the named session
+becomes the one that will receive the next user input. There is no
+"absorb" of one session into another.
+
+The handler is **TUI-only**. Invoking it from a non-TUI CLI session
+(classic prompt, single-message, gateway) raises a clear error. This
+matches `/prompt`'s design: the command only makes sense in an
+interactive context.
+
+### 7.2 Argument grammar
+
+```
+<session-id>  ::=  [websocket:]<channel>:<name>[\#| :]NN
+                |  [websocket:]<channel>:<name>            (no pack)
+                |  <name>[\#| :]NN                          (bare, current channel)
+                |  <name>                                   (bare, current channel, no pack)
+```
+
+- `<channel>` is one of: `assistant`, `any`, `office`, `cli`, `local`,
+  `think`, `work`, `life`, `main`, `engineer`, `hr`, `rnd`, `bus`,
+  `logger`, `doctor`, `interagent`, `websocket` (treated as a no-op
+  prefix, not a real channel). An unknown channel is rejected.
+- `<name>` is a string with no colons or `#` characters. Empty name is
+  rejected.
+- Pack separator `#` is canonical; `:` after a non-empty name is
+  accepted as a WebUI-compatible alias and normalised to `#`.
+
+### 7.3 Implementation contract (`nanobot/command/handler_cmds.py`)
+
+```python
+async def cmd_handler(ctx: CommandContext) -> OutboundMessage | None:
+    """Switch the TUI loop's effective session to the one named by ctx.args."""
+    raw = (ctx.args or "").strip()
+    if not raw:
+        raise CommandError("usage: /handler <session-id>")
+    parsed = parse_handler_target(raw, default_channel=ctx.channel)
+    # parsed is a HandlerTarget dataclass with channel, name, pack fields
+    target_key = parsed.session_key   # canonical: "<channel>:<name>#NN"
+    target = ctx.loop.sessions.get_or_create(target_key)
+    if ctx.loop._active_session_key == target_key:
+        return OutboundMessage(content=f"already on session {target_key}")
+    ctx.loop.switch_active_session(target_key)
+    return OutboundMessage(content=f"switched to {target_key}")
+```
+
+The `parse_handler_target(raw, default_channel)` helper lives in
+`nanobot/command/handler_grammar.py` and is the only piece that knows
+about the `websocket:` prefix and `#` ↔ `:` normalisation.
+
+### 7.4 Integration points (only places conflicts can occur)
+
+- `nanobot/command/builtin.py`:
+  - Add `"/handler"` to `BUILTIN_COMMAND_SPECS` next to `/prompt` and
+    `/pack` (around line 186).
+  - Register `router.exact("/handler", cmd_handler)` in
+    `register_builtin_commands()` (around line 1187).
+- `nanobot/agent/loop.py`:
+  - New method `AgentLoop.switch_active_session(key: str) -> None` that
+    updates the loop's `_active_session_key` and rebinds any per-session
+    subsystems. Keep the implementation narrow — do *not* touch the
+    `_persist_turn` path or the SQLite store.
+- `nanobot/cli/tui_launcher.py`:
+  - The `/handler` command is reachable only from inside a TUI loop.
+    The CLI entry (`nanobot agent`) does not need changes; the command
+    router already dispatches by name.
+
+### 7.5 TUI-only enforcement
+
+`/handler` checks `ctx.session is not None` and `ctx.session.startswith(
+"websocket:") or ctx.session_key is not None`. If invoked outside the
+TUI, it raises `CommandError("handler only available in TUI sessions")`
+with a hint pointing the user at the TUI launcher.
+
+### 7.6 Merge risk
+
+Upstream rarely touches `nanobot/command/builtin.py`'s registration
+table — when it does, the new `/handler` registration may collide with
+a same-named upstream command. The merge playbook says: **if upstream
+adds `/handler` with different semantics, rename ours to `/goto-handler`
+or `/resume`** — never silently overwrite the semantics. Update the
+doc accordingly.
+
+### 7.7 Verification
+
+- AST parse of `nanobot/command/handler_cmds.py` and
+  `nanobot/command/handler_grammar.py`.
+- Unit tests in `tests/command/test_handler_commands.py` covering:
+  - canonical form (`assistant:qna#01`)
+  - WebUI form (`websocket:assistant:qna:01`) → resolves to same key
+  - bare form with default channel
+  - pack separator normalisation (`:01` ↔ `#01`)
+  - reject unknown channel
+  - reject empty name
+  - reject invocation outside TUI
+- Manual smoke from inside an active TUI: `/handler assistant:qna#01`
+  should switch sessions without losing the active turn.
+
+---
+
 ## 5. Step-by-Step Merge Procedure (from `main`)
 
 Run this exact sequence every time. It is designed so that even a chaotic
