@@ -227,6 +227,28 @@ class SessionLocation:
         raise RuntimeError(f"could not allocate an isolated session namespace for {workspace}")
 
     @staticmethod
+    def storage_key_decode_marker(stem: str) -> bool:
+        """Return True if ``stem`` looks like a base64 ``storage_key`` filename.
+
+        The canonical on-disk filename stem is base64.urlsafe_b64encode(session_key)
+        with padding stripped; that always decodes to UTF-8 and contains ':'
+        (the canonical session-key separator). Legacy ``safe_key`` filenames
+        replace ':' with '_' and pass through ``safe_filename``, so they never
+        contain ':'. Used by ``migrate_jsonl`` to prefer canonical storage
+        filenames when two JSONL files claim the same session key.
+        """
+        try:
+            padding = 4 - len(stem) % 4
+            if padding != 4:
+                padded = stem + "=" * padding
+            else:
+                padded = stem
+            decoded = base64.urlsafe_b64decode(padded).decode("utf-8")
+        except (ValueError, TypeError, AttributeError):
+            return False
+        return ":" in decoded
+
+    @staticmethod
     def safe_key(key: str) -> str:
         return safe_filename(key.replace(":", "_"))
 

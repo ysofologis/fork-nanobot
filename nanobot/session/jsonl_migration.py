@@ -168,16 +168,79 @@ def migrate_jsonl(store: SqliteSessionStore, workspace: Path) -> int:
             try:
                 session, files = read_jsonl(path)
                 digests = tuple(source.digest for source in files)
+                line_count = sum(1 for ln in path.read_text().splitlines() if ln.strip())
                 prior = imported.get(session.key)
                 if prior is not None:
-                    prior_path, prior_digests = prior
-                    if prior_digests != digests or store.load(session.key) != session:
-                        raise ValueError(f"duplicate JSONL session key: {prior_path} and {path}")
-                else:
-                    if store.load(session.key) is not None:
-                        raise ValueError(f"session already exists in SQLite: {session.key}")
-                    store.save(session)
-                    imported[session.key] = path, digests
+                    prior_path, prior_digests, prior_lines, prior_updated = prior
+                    # Identical content (digests match + SQLite-roundtrip equal)
+                    # means the two files are byte-for-byte the same session.
+                    # Skip silently — both write the same row.
+                    if prior_digests == digests and store.load(session.key) == session:
+                        logger.debug(
+                            "skipping identical duplicate JSONL session {}: {}",
+                            session.key, path,
+                        )
+                        if directory == workspace_directory:
+                            workspace_sources.extend(
+                                {"name": source.path.name, "digest": source.digest}
+                                for source in files
+                            )
+                        continue
+                    # Real conflict. Pick the richer source by message count,
+                    # then prefer the canonical base64 storage_key filename
+                    # over the legacy safe_key form, then more recent
+                    # updated_at, then lex-first path (deterministic).
+                    prior_is_b64 = SessionLocation.storage_key_decode_marker(prior_path.stem)
+                    new_is_b64 = SessionLocation.storage_key_decode_marker(path.stem)
+                    if line_count != prior_lines:
+                        keep_new = line_count > prior_lines
+                    elif new_is_b64 and not prior_is_b64:
+                        keep_new = True
+                    elif prior_is_b64 and not new_is_b64:
+                        keep_new = False
+                    elif session.updated_at != prior_updated:
+                        keep_new = session.updated_at > prior_updated
+                    else:
+                        keep_new = str(path) < str(prior_path)
+                    if keep_new:
+                        logger.warning(
+                            "duplicate JSONL session key {}: keeping {} ({} lines, "
+                            "updated {}) over {} ({} lines, updated {})",
+                            session.key,
+                            path, line_count, session.updated_at,
+                            prior_path, prior_lines, prior_updated,
+                        )
+                        # The earlier (alphabetically-first) file was saved
+                        # first, so the SQLite row has a higher revision than
+                        # this freshly-read session. Sync the in-memory
+                        # session to the row so save() accepts the overwrite.
+                        existing = store.load(session.key)
+                        if existing is not None:
+                            session.revision = existing.revision
+                            session.generation = existing.generation
+                            session.persisted = existing.persisted
+                        store.save(session)
+                        imported[session.key] = (
+                            path, digests, line_count, session.updated_at,
+                        )
+                    else:
+                        logger.warning(
+                            "duplicate JSONL session key {}: keeping {} ({} lines, "
+                            "updated {}) over {} ({} lines, updated {})",
+                            session.key,
+                            prior_path, prior_lines, prior_updated,
+                            path, line_count, session.updated_at,
+                        )
+                    if directory == workspace_directory:
+                        workspace_sources.extend(
+                            {"name": source.path.name, "digest": source.digest}
+                            for source in files
+                        )
+                    continue
+                if store.load(session.key) is not None:
+                    raise ValueError(f"session already exists in SQLite: {session.key}")
+                store.save(session)
+                imported[session.key] = (path, digests, line_count, session.updated_at)
                 if directory == workspace_directory:
                     workspace_sources.extend(
                         {"name": source.path.name, "digest": source.digest} for source in files
