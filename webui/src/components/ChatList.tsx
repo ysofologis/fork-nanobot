@@ -47,11 +47,12 @@ import {
   HoverHint,
 } from "@/components/ui/tooltip";
 import { MAX_WORKBENCH_PANES } from "@/components/workbench/workbench-model";
+import { SidebarTopicRename } from "@/components/SidebarTopicRename";
+import { SkeletonStatus } from "@/components/settings/shared/SkeletonStatus";
 import {
   SIDEBAR_SELECTION_ITEM_CLASS,
   SidebarSelectionHighlight,
 } from "@/components/SidebarSelectionHighlight";
-import { relativeTime, visibleSessionPreview } from "@/lib/format";
 import {
   COLLAPSED_CHATS_VISIBLE_COUNT,
   displayTitle,
@@ -226,7 +227,7 @@ interface ChatListProps {
   onRequestDelete: (key: string, label: string) => void;
   onRequestDeleteMany?: (items: SidebarDeleteItem[]) => void;
   onTogglePin: (key: string) => void;
-  onRequestRename: (key: string, label: string) => void;
+  onRequestRename: (key: string, title: string) => Promise<void>;
   onRequestRenameTab?: (key: string, label: string) => void;
   onToggleArchive: (key: string) => void;
   paneGroups?: Record<string, SidebarPaneGroup>;
@@ -253,13 +254,12 @@ interface ChatListProps {
   updatedChatIds?: string[];
   recoveryChatIds?: string[];
   density?: SidebarDensity;
-  showPreviews?: boolean;
-  showTimestamps?: boolean;
   sort?: SidebarSortMode;
   showArchived?: boolean;
   defaultWorkspacePath?: string | null;
   actionMenuPortalContainer?: HTMLElement | null;
   loading?: boolean;
+  initialLoading?: boolean;
   emptyLabel?: string;
 }
 
@@ -296,13 +296,12 @@ export const ChatList = memo(function ChatList({
   updatedChatIds = [],
   recoveryChatIds = [],
   density = "comfortable",
-  showPreviews = false,
-  showTimestamps = false,
   sort = "updated_desc",
   showArchived = false,
   defaultWorkspacePath,
   actionMenuPortalContainer,
   loading,
+  initialLoading = loading,
   emptyLabel,
 }: ChatListProps) {
   const { t } = useTranslation();
@@ -344,6 +343,22 @@ export const ChatList = memo(function ChatList({
   const [paneDropTarget, setPaneDropTarget] = useState<string | null>(null);
   const [deleteSelectionMode, setDeleteSelectionMode] = useState(false);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+  const [renamingTopic, setRenamingTopic] = useState<{ key: string } | null>(null);
+  const renamingKey = renamingTopic?.key ?? null;
+  const previousRenamingKeyRef = useRef<string | null>(null);
+  const beginRename = (key: string) => setRenamingTopic({ key });
+  const endRename = () => {
+    setRenamingTopic((current) => current === renamingTopic ? null : current);
+  };
+  useLayoutEffect(() => {
+    const previousKey = previousRenamingKeyRef.current;
+    previousRenamingKeyRef.current = renamingKey;
+    if (renamingKey !== null || previousKey === null) return;
+    const row = Array.from(scrollViewportRef.current?.querySelectorAll<HTMLElement>(
+      "[data-chat-row]",
+    ) ?? []).find((element) => element.dataset.chatRow === previousKey);
+    row?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+  }, [renamingKey]);
   const [selectedDeleteKeys, setSelectedDeleteKeys] = useState<Set<string>>(
     () => new Set(),
   );
@@ -561,11 +576,22 @@ export const ChatList = memo(function ChatList({
     for (const animation of layoutAnimationsRef.current.values()) animation.cancel();
   }, []);
 
-  if (loading && sessions.length === 0 && temporarySessions.length === 0) {
+  if (initialLoading && sessions.length === 0 && temporarySessions.length === 0) {
     return (
-      <div className="px-3 py-6 text-[12px] text-sidebar-muted-foreground">
-        {t("chat.loading")}
-      </div>
+      <SkeletonStatus label={t("chat.loading")} className="px-2 py-1.5">
+        <div className="flex h-8 items-center px-2"><div className="h-2.5 w-14 rounded bg-sidebar-muted-foreground/15" /></div>
+        <div className="space-y-0.5">
+          {[64, 76, 56, 70, 60, 72].map((width, index) => (
+            <div key={index} data-chat-skeleton-row className={cn("flex items-center gap-1 px-2", density === "compact" ? "h-[30px]" : "h-[34px]", "[@media(pointer:coarse)]:h-11")}>
+              <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                <div className="h-2.5 w-10 shrink-0 rounded bg-sidebar-muted-foreground/15" />
+                <div className="h-3 rounded bg-sidebar-muted-foreground/20" style={{ width: `${width}%` }} />
+              </div>
+              <div className="h-4 w-4 shrink-0" /><div className="h-6 w-6 shrink-0" />
+            </div>
+          ))}
+        </div>
+      </SkeletonStatus>
     );
   }
 
@@ -766,7 +792,6 @@ export const ChatList = memo(function ChatList({
                           : undefined
                       }
                       actionMenuPortalContainer={actionMenuPortalContainer}
-                      updatedAt={showTimestamps ? group.updatedAt : null}
                     />
                   ) : (
                     <ChatsGroupHeader label={group.label} />
@@ -910,6 +935,9 @@ export const ChatList = memo(function ChatList({
                                   onSelectPane={onSelectPane}
                                   onRequestDelete={onRequestDelete}
                                   onRequestRename={onRequestRename}
+                                  renamingKey={renamingKey}
+                                  onBeginRename={beginRename}
+                                  onEndRename={endRename}
                                   onTogglePin={onTogglePin}
                                   onToggleArchive={onToggleArchive}
                                   pinned={pinnedPanes}
@@ -934,11 +962,6 @@ export const ChatList = memo(function ChatList({
 
                     const isPinned = pinned.has(s.key);
                     const isArchived = archived.has(s.key);
-                    const preview = visibleSessionPreview(s.preview);
-                    const showPreview = showPreviews && preview && preview !== title;
-                    const timestamp = showTimestamps
-                      ? relativeTime(s.updatedAt ?? s.createdAt)
-                      : "";
                     const activityState = running.has(s.chatId)
                       ? "running"
                       : recovery.has(s.chatId)
@@ -979,7 +1002,14 @@ export const ChatList = memo(function ChatList({
                               && "bg-sidebar-accent/55 text-sidebar-accent-foreground",
                           )}
                         >
-                          <button
+                          {renamingKey === s.key ? (
+                            <SidebarTopicRename
+                              key={s.key}
+                              title={title}
+                              onSave={(nextTitle) => onRequestRename(s.key, nextTitle)}
+                              onClose={endRename}
+                            />
+                          ) : <button
                               type="button"
                               onClick={(event) => {
                                 if (deleteSelectionMode) {
@@ -1012,45 +1042,19 @@ export const ChatList = memo(function ChatList({
                                   partial={tabPartiallySelected}
                                 />
                               ) : null}
-                                <span className="min-w-0 flex-1 overflow-hidden">
-                                  {projectMode ? (
-                                    <span className="relative flex w-full min-w-0 items-center gap-2">
-                                      <SidebarSessionHandle handle={s.handle} />
-                                      <span className="min-w-0 flex-1 truncate font-normal leading-5">
-                                        {title}
-                                      </span>
-                                      {isPinned ? <PinnedChatIndicator /> : null}
-                                    {timestamp ? (
-                                      <span className="shrink-0 text-[11.5px] font-medium text-sidebar-muted-foreground">
-                                        {timestamp}
-                                      </span>
-                                    ) : null}
-
-                                  </span>
-                                ) : (
-                                  <span className="relative flex w-full min-w-0 items-center gap-1.5">
-                                    <SidebarSessionHandle handle={s.handle} />
-                                    <span className="min-w-0 flex-1 truncate font-normal leading-5">
-                                      {title}
-                                    </span>
-                                    {isPinned ? <PinnedChatIndicator /> : null}
-
-                                  </span>
-                                )}
-                                {showPreview ? (
-                                  <span className="block w-full truncate text-[11.5px] leading-4 text-sidebar-muted-foreground">
-                                    {preview}
-                                  </span>
-                                ) : null}
-                                {timestamp && !projectMode ? (
-                                  <span className="block w-full truncate text-[11px] leading-4 text-sidebar-muted-foreground">
-                                    {timestamp}
-                                  </span>
-                                ) : null}
+                              <span className={cn(
+                                "relative flex min-w-0 flex-1 items-center overflow-hidden",
+                                projectMode ? "gap-2" : "gap-1.5",
+                              )}>
+                                <SidebarSessionHandle handle={s.handle} />
+                                <span className="min-w-0 flex-1 truncate font-normal leading-5">
+                                  {title}
+                                </span>
+                                {isPinned ? <PinnedChatIndicator /> : null}
                               </span>
-                          </button>
+                          </button>}
                           <SessionActivityIndicator state={activityState} />
-                          {!deleteSelectionMode ? (
+                          {!deleteSelectionMode && renamingKey !== s.key ? (
                             <DropdownMenu
                               modal={false}
                               open={actionMenus.openId === actionMenuId}
@@ -1080,7 +1084,7 @@ export const ChatList = memo(function ChatList({
                                 {isPinned ? t("chat.unpin") : t("chat.pin")}
                               </DropdownMenuItem>
                               <DropdownMenuItem
-                                onSelect={() => onRequestRename(s.key, title)}
+                                onSelect={() => beginRename(s.key)}
                               >
                                 <Pencil className="h-4 w-4 shrink-0" />
                                 {t("chat.rename")}
@@ -1356,6 +1360,9 @@ function ActivePaneRows({
   onSelectPane,
   onRequestDelete,
   onRequestRename,
+  renamingKey,
+  onBeginRename,
+  onEndRename,
   onTogglePin,
   onToggleArchive,
   pinned,
@@ -1380,7 +1387,10 @@ function ActivePaneRows({
   recovery: ReadonlySet<string>;
   onSelectPane?: (tabKey: string, paneKey: string) => void;
   onRequestDelete: (key: string, label: string) => void;
-  onRequestRename: (key: string, label: string) => void;
+  onRequestRename: (key: string, title: string) => Promise<void>;
+  renamingKey: string | null;
+  onBeginRename: (key: string) => void;
+  onEndRename: () => void;
   onTogglePin: (key: string) => void;
   onToggleArchive: (key: string) => void;
   pinned: ReadonlySet<string>;
@@ -1451,7 +1461,14 @@ function ActivePaneRows({
                   && "bg-sidebar-accent/55 text-sidebar-accent-foreground",
               )}
             >
-              <button
+              {renamingKey === pane.key ? (
+                <SidebarTopicRename
+                  key={pane.key}
+                  title={pane.title}
+                  onSave={(nextTitle) => onRequestRename(pane.key, nextTitle)}
+                  onClose={onEndRename}
+                />
+              ) : <button
                   type="button"
                   onClick={(event) => {
                     if (deleteSelectionMode) {
@@ -1487,9 +1504,9 @@ function ActivePaneRows({
                     {isPinned ? <PinnedChatIndicator /> : null}
 
                   </span>
-              </button>
+              </button>}
               <SessionActivityIndicator state={activityState} />
-              {!deleteSelectionMode ? <DropdownMenu
+              {!deleteSelectionMode && renamingKey !== pane.key ? <DropdownMenu
                 modal={false}
                 open={actionMenus.openId === actionMenuId}
                 onOpenChange={(open) => actionMenus.onOpenChange(actionMenuId, open)}
@@ -1516,7 +1533,7 @@ function ActivePaneRows({
                     {isPinned ? t("chat.unpin") : t("chat.pin")}
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onSelect={() => onRequestRename(pane.key, pane.title)}
+                    onSelect={() => onBeginRename(pane.key)}
                   >
                     <Pencil className="h-4 w-4 shrink-0" />
                     {t("chat.rename")}
@@ -1709,7 +1726,6 @@ function ProjectGroupHeader({
   onRequestRename,
   onNewChat,
   actionMenuPortalContainer,
-  updatedAt,
 }: {
   active: boolean;
   label: string;
@@ -1721,7 +1737,6 @@ function ProjectGroupHeader({
   onRequestRename?: () => void;
   onNewChat?: () => void;
   actionMenuPortalContainer?: HTMLElement | null;
-  updatedAt?: string | null;
 }) {
   const { t } = useTranslation();
   const projectButton = (
@@ -1775,11 +1790,6 @@ function ProjectGroupHeader({
             {projectButton}
           </HoverHint>
         ) : projectButton}
-        {updatedAt ? (
-          <span className="shrink-0 text-[11px] text-sidebar-muted-foreground">
-            {relativeTime(updatedAt)}
-          </span>
-        ) : null}
         {onRequestRename || onNewChat ? (
           <DropdownMenu
             modal={false}

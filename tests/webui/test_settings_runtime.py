@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -11,7 +10,6 @@ from nanobot.config.schema import Config
 from nanobot.webui.settings_api import update_runtime_config_settings
 from nanobot.webui.settings_contracts import WebUISettingsError
 from nanobot.webui.settings_runtime import (
-    RUNTIME_CONFIG_PATHS,
     runtime_config_payload,
     update_runtime_config,
 )
@@ -69,6 +67,7 @@ def test_runtime_patch_persists_and_preserves_other_domains(tmp_path):
     {"agents.defaults.max_concurrent_subagents": 0},
     {"agents.defaults.max_tool_iterations": True},
     {"tools.exec.timeout": -1},
+    {"tools.exec.timeout": 86401},
     {"tools.exec.timeout": "60"},
     {"tools.exec.enable": "false"},
     {"tools.exec.allowed_env_keys": "TOKEN"},
@@ -97,6 +96,39 @@ def test_invalid_patch_is_atomic(tmp_path, values):
             "agents.defaults.max_tool_iterations": 71, **values,
         }, local_browser=True, config_path=path)
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("limit", [120, 86400, 172800])
+def test_shell_runtime_editor_uses_the_configured_limit(tmp_path, limit):
+    path = tmp_path / "config.json"
+    config = Config.model_validate({"tools": {"exec": {"maxRuntimeLimit": limit}}})
+    save_config(config, path)
+    before = path.read_bytes()
+
+    with pytest.raises(WebUISettingsError, match=f"1–{limit} seconds"):
+        update_runtime_config_settings({"tools.exec.timeout": limit + 1}, config_path=path)
+    assert path.read_bytes() == before
+
+    payload = update_runtime_config_settings({"tools.exec.timeout": limit}, config_path=path)
+    assert payload["advanced"]["exec_max_runtime_limit"] == limit
+    assert payload["runtime_config"]["tools.exec.timeout"] == limit
+    saved = load_config(path).tools.exec
+    assert saved.max_runtime == limit
+    assert saved.max_runtime_limit == limit
+
+
+def test_other_settings_preserve_a_longer_trusted_shell_runtime(tmp_path):
+    path = tmp_path / "config.json"
+    save_config(Config.model_validate({"tools": {"exec": {
+        "maxRuntime": 172800, "maxRuntimeLimit": 86400,
+    }}}), path)
+
+    update_runtime_config_settings({"tools.exec.path_append": "extra-bin"}, config_path=path)
+
+    saved = load_config(path).tools.exec
+    assert saved.max_runtime == 172800
+    assert saved.max_runtime_limit == 86400
+    assert saved.path_append == "extra-bin"
 
 
 def test_remote_client_cannot_change_install_policy():
@@ -132,13 +164,11 @@ def test_api_changes_require_explicit_restart(tmp_path):
     assert payload["requires_restart"]
 
 
-def test_every_exposed_runtime_setting_has_a_frontend_use():
-    fields = Path(__file__).parents[2] / "webui/src/components/settings/system/runtime-config-fields.ts"
-    paths = re.findall(r'group: "[^"]+", path: "([^"]+)"', fields.read_text(encoding="utf-8"))
+def test_runtime_payload_matches_shared_catalogue_contract():
+    fixture = Path(__file__).with_name("fixtures") / "runtime-config-keys.json"
+    paths = json.loads(fixture.read_text(encoding="utf-8"))
     assert len(paths) == len(set(paths))
-    # The CLI enable flag controls visibility of its advanced fields, without an editor.
-    visibility_only = {"tools.cli_apps.enable"}
-    assert set(paths) | visibility_only == set(RUNTIME_CONFIG_PATHS)
+    assert set(runtime_config_payload(Config())) == set(paths)
 
 
 def test_disabling_memory_consolidation_preserves_other_memory_settings():
