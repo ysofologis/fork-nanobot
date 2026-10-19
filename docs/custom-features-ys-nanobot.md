@@ -1,10 +1,19 @@
 # Custom Features — YS Nanobot (Technical Reference)
 
-This document is the authoritative technical reference for the four custom
+This document is the authoritative technical reference for the custom
 features implemented on the `ys-nanobot/improvements` branch. It exists for
 one purpose: **make every future merge/rebase from upstream `main` predictable
 and painless** — you should never have to reverse-engineer a conflict, wonder
 whether a feature survived a merge, or rediscover where a feature hooks in.
+
+> **Status note (post-2026-10-19 merge):** Upstream commit `8f6a5594f`
+> ("refactor(session): centralize state ownership in SQLite") replaced the
+> JSONL session store with a SQLite store, eliminating the runtime-checkpoint
+> API entirely. As a result **Feature 4b (checkpoint sidecar)** and
+> **Feature 6 (async-fire-and-forget session save)** were **retired** — they
+> targeted JSONL-on-disk semantics that no longer exist. Feature 4a (the
+> tool-results offload dir) is unaffected and survives intact. See §4.6 and
+> §6.6 below for the full retirement rationale.
 
 Use it as a merge playbook, not just a catalog. Each feature section lists:
 
@@ -429,8 +438,14 @@ if the user had typed it.
 
 ## Feature 4: Tool-Call Performance (per-tool disk latency)
 
-**Status:** Merged into `ys-nanobot/improvements` (commit
-`perf(tools): cut per-tool-call disk latency` — current HEAD of the branch)
+**Status:**
+- **Feature 4a (tool-results offload / fast local dir):** Active, survives the
+  upstream SQLite migration. Confirmed working in `ys-nanobot/improvements`
+  (2026-10-19 merge).
+- **Feature 4b (runtime-checkpoint sidecar):** **Retired** by upstream commit
+  `8f6a5594f` (SQLite migration). The JSONL `JsonlSessionStore` and its
+  `save_runtime_checkpoint_snapshot` API no longer exist. `_runtime_checkpoint_cache_dir()`
+  is kept as a no-op helper for back-compat with imports. See §4.6.
 
 ### 4.1 Motivation & design
 
@@ -571,6 +586,42 @@ If missing → re-add both (the coalescing writer + the snapshot facade).
 Also confirm _runtime_checkpoint_cache_dir() is used in create_loop().
 ```
 
+### 4.6 Retirement of Feature 4b (post-2026-10-19 merge)
+
+Upstream commit `8f6a5594f` ("refactor(session): centralize state ownership in
+SQLite") replaced the JSONL-based `JsonlSessionStore` with a new
+`SqliteSessionStore`. The change **eliminated the entire runtime-checkpoint
+sidecar mechanism** that Feature 4b was built around:
+
+| Concept | Pre-SQLite | Post-SQLite |
+|---|---|---|
+| Persistence backend | `JsonlSessionStore` (JSONL files + sidecar checkpoints) | `SqliteSessionStore` (single SQLite DB + WAL) |
+| Per-tool disk write | 2 fsync'd JSONL checkpoints per tool batch | One DB transaction at turn end |
+| Checkpoint sidecar API | `save_runtime_checkpoint_snapshot` (Feature 4b target) | `await sessions.state.checkpoint_view()` (async, no fsync) |
+| In-flight coalescing | Required (Feature 4b) | Not needed (SQLite writes are batched) |
+
+**Removed symbols** (Feature 4b implementation):
+- `nanobot/session/manager.py`: `JsonlSessionStore` (whole class),
+  `_SessionFileSnapshot`, `SessionRestoreResult`, `SessionStore(Protocol)`,
+  `save_runtime_checkpoint_snapshot`, `_write_checkpoint_unlocked`,
+  `_session_files_lock` (lock only — the SQLite store has its own)
+- `nanobot/agent/loop.py`: `_schedule_checkpoint_write`
+
+**Preserved symbols** (kept as no-ops for back-compat):
+- `_runtime_checkpoint_cache_dir()` — returns `None`. SQLite doesn't need it.
+
+**Survivors** (Feature 4a, still active):
+- `_write_text_atomic(..., fsync=False)` and `maybe_persist_tool_result(..., results_dir=...)`
+  in `nanobot/utils/helpers.py`
+- `toolResultsDir` config in `nanobot/config/schema.py`
+- `ContextGovernanceConfig.tool_results_dir`, `AgentRunSpec.tool_results_dir`
+
+If you ever wonder "where did Feature 4b go?" — it was retired by upstream's
+SQLite migration, not by a YS-Nanobot decision. The motivation (avoid disk
+stalls on slow mounts) is partially addressed by SQLite's transactional WAL
+already; the *remaining* concern (oversized tool-result offload on slow
+mounts) is still handled by Feature 4a.
+
 ---
 
 ## Feature 5: Prompt Launcher — `/prompt <name>` + `/prompt-list`
@@ -677,6 +728,15 @@ nanobot/command/builtin.py. If missing → re-add the module and both specs.
 
 ## Feature 6: Async-Fire-and-Forget Session Save
 
+> **⚠️ Retired by upstream (2026-10-19).** The SQLite migration
+> (`8f6a5594f`) replaced `self.sessions.save(session)` with
+> `await self.sessions.state.finish_turn(session)` (which already runs the
+> DB transaction off the event-loop thread). The motivation (hide disk-flush
+> latency from the user) is now satisfied by upstream's new path. The
+> `schedule_session_save` and `await_pending_session_saves` helpers were
+> removed, along with `tests/agent/test_async_save.py`. See §6.6 below for
+> the full rationale.
+
 ### What it does
 
 The trailing `sessions.save(session)` at the end of every turn is scheduled
@@ -736,6 +796,46 @@ Upstream may touch `loop.py` to refactor `_persist_turn`. When resolving:
    response to see, so a sync save is fine), but **convert any save at the
    end of `_run_turn` or `_prepare_outbound` to `schedule_session_save`**.
 
+### 6.6 Retirement rationale (2026-10-19 merge)
+
+Feature 6 targeted `self.sessions.save(session)` on the legacy JSONL-backed
+`SessionManager`. Upstream's SQLite refactor replaced this with:
+
+```python
+await self.sessions.state.finish_turn(session)
+```
+
+in `_persist_turn`. The new path is **already structured for off-loop disk
+work**: `SessionState.finish_turn` → `_submit_draft` → `_execute` → a
+single transaction against the SQLite store. The motivation of Feature 6
+(hide the disk-flush latency from the user) is now satisfied by upstream's
+design.
+
+Re-implementing Feature 6 against SQLite would require:
+- Deferring the entire `_execute` call (not just a JSON flush), AND
+- Coordinating with `SessionState`'s per-key locking, AND
+- Rebuilding `await_pending_session_saves` against `_execute`'s coroutine
+  chain
+
+For negligible benefit (SQLite transactions are already fast — a typical
+turn write is sub-ms on a slow mount), the feature was retired. The
+recovery path (the `/stop` cancellation handler) still synchronously
+materializes partial context, so durability semantics are preserved.
+
+**Removed:**
+- `AgentLoop.schedule_session_save()` — background save scheduling
+- `AgentLoop.await_pending_session_saves()` — test boundary helper
+- `tests/agent/test_async_save.py` — 5 contract tests
+
+**Behavior preserved:** `_persist_turn` awaits
+`self.sessions.state.finish_turn(session)` directly. Cancellation handlers
+in `AgentLoop.run()` continue to call the synchronous materialization path
+where they need to.
+
+If a future upstream change reintroduces a slow per-turn write path
+(e.g. a separate compaction flush), Feature 6 could be reborn with the
+same motivation but targeting `_execute` instead of `sessions.save`.
+
 ---
 
 ## 5. Step-by-Step Merge Procedure (from `main`)
@@ -753,6 +853,17 @@ git fetch origin main           # upstream HKUDS/nanobot
 git rev-list --left-right --count HEAD...origin/main   # expect "N 0" (0 = no new upstream)
 git log --oneline HEAD..fork/ys-nanobot/improvements   # expect EMPTY after ff (features present)
 git merge-base --is-ancestor origin/main HEAD && echo "main fully merged" || echo "MUST MERGE main"
+
+# 2b. **Architectural-shift scan** — look for upstream refactors that may
+#     invalidate a feature's foundation. Cheap heuristic: any commit on
+#     origin/main whose diffstat touches more than ~40% of a feature's
+#     primary file is suspicious.
+git log --oneline --stat origin/main --since="6 months ago" \
+  -- nanobot/session/manager.py nanobot/agent/loop.py \
+  | head -200
+# Inspect the largest diffstats manually. If a refactor changes the
+# persistence backend, the public API surface, or the runner's hot loop,
+# pause and re-read the affected feature's section before merging.
 
 # 3. If upstream has new commits, merge it
 git merge origin/main           # resolve conflicts using the per-feature playbooks above
@@ -789,15 +900,18 @@ After any merge/rebase, confirm every row:
 | `session/pack_manager.py` | `nanobot/session/pack_manager.py` | Pack CRUD |
 | `command/pack_cmds.py` | `nanobot/command/pack_cmds.py` | Pack commands |
 | `session/__init__.py` exports | `nanobot/session/__init__.py` (lines 4–8) | Public API surface |
-| `_write_text_atomic` `fsync` kwarg + `results_dir` | `nanobot/utils/helpers.py` | Perf: no-fsync offload |
-| `toolResultsDir` config | `nanobot/config/schema.py` `AgentDefaults` | Perf: fast local offload dir |
-| `_schedule_checkpoint_write` + `_runtime_checkpoint_cache_dir` | `nanobot/agent/loop.py` | Perf: coalesced off-loop checkpoints |
-| `save_runtime_checkpoint_snapshot` + `checkpoint_dir` | `nanobot/session/manager.py` | Perf: snapshot writer + fast checkpoint dir |
+| `_write_text_atomic` `fsync` kwarg + `results_dir` | `nanobot/utils/helpers.py` | Perf: no-fsync offload (Feature 4a) |
+| `toolResultsDir` config | `nanobot/config/schema.py` `AgentDefaults` | Perf: fast local offload dir (Feature 4a) |
+| `_schedule_checkpoint_write` | `nanobot/agent/loop.py` | **Retired** (Feature 4b): upstream SQLite migration removed the API |
+| `save_runtime_checkpoint_snapshot` + `checkpoint_dir` | `nanobot/session/manager.py` | **Retired** (Feature 4b): `JsonlSessionStore` no longer exists |
+| `JsonlSessionStore` class | `nanobot/session/manager.py` | **Retired** (Feature 4b): replaced upstream by `SqliteSessionStore` |
 | `prompt_cmds.py` | `nanobot/command/prompt_cmds.py` | Prompt launcher (`/prompt`, `/prompt-list`) |
 | Two `/prompt` + `/prompt-list` specs | `nanobot/command/builtin.py` `BUILTIN_COMMAND_SPECS` | Prompt launcher palette/help |
 | Three prompt router lines | `nanobot/command/builtin.py` `register_builtin_commands()` (before pack block) | Prompt launcher dispatch |
-| `schedule_session_save` + `await_pending_session_saves` | `nanobot/agent/loop.py` | Async-save: trailing `sessions.save` deferred to background |
-| `self.schedule_session_save(session)` in `_persist_turn` | `nanobot/agent/loop.py` line ~2142 | Async-save: replaces sync `self.sessions.save(session)` |
+| `schedule_session_save` + `await_pending_session_saves` | `nanobot/agent/loop.py` | **Retired** (Feature 6): replaced upstream by `await sessions.state.finish_turn()` |
+| `self.schedule_session_save(session)` in `_persist_turn` | `nanobot/agent/loop.py` | **Retired** (Feature 6): upstream's new path is already off-loop |
+| `test_async_save.py` | `tests/agent/test_async_save.py` | **Retired** (Feature 6): removed with the feature |
+| `_runtime_checkpoint_cache_dir()` returns `None` | `nanobot/agent/loop.py` | Feature 4b no-op stub (kept for import back-compat) |
 
 ## 7. Post-Merge Verification (commands)
 
