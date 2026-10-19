@@ -2415,6 +2415,20 @@ class AgentLoop:
         if ctx.ephemeral and ctx.outbound is not None:
             ctx.outbound.metadata["_stop_reason"] = ctx.stop_reason
 
+    async def await_pending_session_saves(self) -> None:
+        """No-op compatibility shim retained after the F6 retirement.
+
+        Upstream's regression tests in tests/agent/test_loop_save_turn.py and
+        tests/command/test_compact_command.py call ``loop.await_pending_session_saves()``
+        between triggering a turn and asserting on the persisted session,
+        which historically drained a fire-and-forget save queue. The current
+        SQLite-backed ``SessionManager._persist_turn`` is already fully
+        synchronous (``await self.sessions.state.finish_turn(session)``), so
+        there is nothing left to drain. The method is preserved so those
+        upstream tests keep passing unchanged through future merges.
+        """
+        return None
+
     def _sanitize_persisted_blocks(
         self,
         content: list[object],
