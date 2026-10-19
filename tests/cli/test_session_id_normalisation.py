@@ -40,16 +40,26 @@ def _normalise(sid, default_channel="cli"):
 
 
 def test_hook_present_in_agent_body():
-    """The agent() function should call parse_handler_target near the top."""
+    """The agent() function should call parse_handler_target and gate it on
+    ``not native_tui`` so only the classic-prompt branch is normalised.
+
+    Ordering requirement (post-fix): the hook runs AFTER both
+    _load_runtime_config (because runtime_config must exist) AND the
+    native_tui decision (because the hook gates on it)."""
     src = inspect.getsource(cli_agent.agent)
     assert "parse_handler_target" in src, (
         "nanobot.cli.agent.agent must call parse_handler_target to normalise "
         "the -s/--session argument"
     )
-    # The hook must run BEFORE _load_runtime_config so both branches see
-    # the canonical key.
-    assert src.find("parse_handler_target") < src.find("_load_runtime_config"), (
-        "normalisation hook must run before _load_runtime_config"
+    hook_idx = src.find("parse_handler_target")
+    load_idx = src.find("_load_runtime_config")
+    native_tui_idx = src.find("native_tui = message is None")
+    assert load_idx != -1 and load_idx < hook_idx, (
+        "_load_runtime_config must run before the hook (load happens first)"
+    )
+    assert native_tui_idx != -1 and native_tui_idx < hook_idx, (
+        "native_tui decision must happen before the hook (so the hook can "
+        "gate on it)"
     )
 
 
@@ -97,7 +107,38 @@ def test_both_cli_invocations_resolve_to_same_session():
         nanobot agent -s assistant:qna#01         -c config/nanobot-assistant.json --no-tui
 
     Both must load the SAME session key.
+
+    The CLI hook normalises only on the classic-prompt branch (when
+    ``native_tui`` is False). The native TUI branch keeps the
+    ``websocket:`` form because upstream's _websocket_chat_id (called by
+    launch_tui) requires it for WebUI chat-id extraction.
     """
     a = _normalise("websocket:assistant:qna:01")
     b = _normalise("assistant:qna#01")
     assert a == b == "assistant:qna#01"
+
+
+def test_hook_is_gated_on_native_tui():
+    """The normalisation hook must run AFTER ``native_tui = ...`` is decided
+    and must check ``not native_tui`` before calling parse_handler_target.
+
+    Without this gate, the TUI branch receives the canonical key
+    (``assistant:qna#01``) which upstream's _websocket_chat_id rejects
+    with 'the native TUI can open only WebSocket sessions'. The gate
+    preserves upstream's TUI semantics: TUI must be given a websocket:-
+    prefixed key; classic-prompt may use either form.
+    """
+    src = inspect.getsource(cli_agent.agent)
+    hook_idx = src.find("parse_handler_target")
+    native_tui_idx = src.find("native_tui = message is None")
+    assert native_tui_idx != -1, "native_tui assignment not found in agent() body"
+    assert hook_idx > native_tui_idx, (
+        "normalisation hook must run AFTER native_tui is decided, "
+        f"got hook at {hook_idx} vs native_tui at {native_tui_idx}"
+    )
+    # The hook must gate on the negation of native_tui.
+    between = src[native_tui_idx:hook_idx]
+    assert "not native_tui" in between or "not native_tui" in src[hook_idx:hook_idx + 400], (
+        "normalisation hook must check 'not native_tui' before calling "
+        "parse_handler_target, so it skips when the TUI branch runs"
+    )

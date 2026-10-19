@@ -79,14 +79,20 @@ def agent(
     ),
 ):
     """Chat in the terminal or send one message non-interactively."""
-    # Normalise -s/--session input to its canonical form before either
-    # the native TUI or the classic-prompt branch consumes it. This
-    # collapses the dual-naming that the WebUI side (``websocket:`` prefix,
-    # ``:NN`` pack separator) and the TUI / classic side (``#NN`` pack
-    # separator) have historically produced into one canonical key.
-    # The grammar lives in nanobot.command.handler_grammar so the rule is
-    # in one place (shared with the /handler slash command, Feature 7).
-    if session_id and session_id.strip():
+    runtime_config = _load_runtime_config(config, workspace)
+    theme = theme.strip().lower()
+    if theme not in {"auto", "dark", "light"}:
+        raise typer.BadParameter("must be auto, dark, or light", param_hint="--theme")
+    native_tui = message is None and not classic
+
+    # Normalise -s/--session input to its canonical form for the
+    # classic-prompt branch only. The native TUI branch keeps the
+    # websocket: form because upstream's _websocket_chat_id (called by
+    # launch_tui) requires a websocket:-prefixed key to extract the
+    # WebUI chat-id for routing through the gateway. The grammar lives
+    # in nanobot.command.handler_grammar so the rule is in one place
+    # (shared with the /handler slash command, Feature 7).
+    if session_id and session_id.strip() and not native_tui:
         from nanobot.command.handler_grammar import (
             HandlerGrammarError,
             parse_handler_target,
@@ -97,12 +103,6 @@ def agent(
         except HandlerGrammarError as exc:
             raise typer.BadParameter(str(exc), param_hint="--session") from exc
         session_id = _target.session_key
-
-    runtime_config = _load_runtime_config(config, workspace)
-    theme = theme.strip().lower()
-    if theme not in {"auto", "dark", "light"}:
-        raise typer.BadParameter("must be auto, dark, or light", param_hint="--theme")
-    native_tui = message is None and not classic
     if native_tui:
         from nanobot.cli.tui_launcher import TuiSessionError, TuiUnavailableError, launch_tui
         from nanobot.config.loader import get_config_path

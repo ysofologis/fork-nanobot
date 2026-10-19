@@ -1006,23 +1006,40 @@ no link between them, so ``nanobot agent -s websocket:assistant:qna:01``
 and ``nanobot agent -s assistant:qna#01`` would silently load two
 different sessions.
 
-The hook at the top of ``nanobot.cli.agent.agent()`` collapses both
-shapes to the canonical form before either CLI branch consumes it,
-reusing ``parse_handler_target`` from §7.2. After the hook runs:
+The hook runs *after* the ``native_tui = message is None and not classic``
+decision and is gated on ``not native_tui``, so only the classic-prompt
+branch normalises. The native TUI branch keeps the ``websocket:`` form
+because upstream's ``_websocket_chat_id`` (called by ``launch_tui``)
+requires a ``websocket:``-prefixed key to extract the WebUI chat-id
+for routing through the gateway. Without this gate, the TUI branch would
+silently load canonical keys and upstream's ``_websocket_chat_id``
+would reject them with "the native TUI can open only WebSocket sessions".
 
-- ``-s websocket:assistant:qna:01`` and ``-s assistant:qna#01`` resolve to
-  the same canonical ``assistant:qna#01`` key.
-- ``-s websocket:cli:any_2026-05-24:04`` becomes
-  ``cli:any_2026-05-24#04``.
+Concretely:
+
+- ``nanobot agent -s websocket:assistant:qna:01`` (TUI): the websocket:
+  prefix is preserved, ``_websocket_chat_id`` resolves it to the WebUI
+  chat-id ``assistant:qna:01``, the TUI loads the same conversation
+  thread stored under the canonical ``assistant:qna#01`` key.
+- ``nanobot agent -s assistant:qna#01 --no-tui`` (classic): the canonical
+  form is preserved, the classic-prompt branch loads the same SQLite
+  row.
+- ``nanobot agent -s websocket:assistant:qna:01 --no-tui`` (classic): the
+  websocket: prefix is stripped, ``:NN`` normalised to ``#NN``, the
+  classic branch sees the same canonical key as the previous command.
 - ``-s cli:direct`` (the classic-prompt default) is unchanged.
 - ``-s`` not given (None) or empty stays as-is.
 - Bad input (``-s foo:qna#01``, ``-s assistant:``, ``-s websocket``)
-  raises ``typer.BadParameter`` with a clean grammar error.
+  raises ``typer.BadParameter`` with a clean grammar error, on either
+  branch.
 
-Side effect to be aware of: a session that exists *only* under the WebUI
-form (no canonical counterpart) becomes unreachable via ``-s``. Run
-``nanobot agent -s websocket:<key>`` once after upgrade to discover
-whether any of your workflows depend on such legacy-only sessions.
+Both CLI invocations load the **same conversation thread** because both
+read from the same SQLite store; the only difference is the key format
+each surface accepts. Sessions that exist *only* under the WebUI form
+(no canonical counterpart) remain reachable via ``-s websocket:<key>``;
+the classic prompt can be pointed at them too, by passing the same
+websocket: form (it will be normalised to canonical on the way in, and
+if no canonical row exists, the session is created on first save).
 
 ### 7.9 Verification (additions for §7.8)
 
