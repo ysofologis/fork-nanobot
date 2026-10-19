@@ -79,6 +79,25 @@ def agent(
     ),
 ):
     """Chat in the terminal or send one message non-interactively."""
+    # Normalise -s/--session input to its canonical form before either
+    # the native TUI or the classic-prompt branch consumes it. This
+    # collapses the dual-naming that the WebUI side (``websocket:`` prefix,
+    # ``:NN`` pack separator) and the TUI / classic side (``#NN`` pack
+    # separator) have historically produced into one canonical key.
+    # The grammar lives in nanobot.command.handler_grammar so the rule is
+    # in one place (shared with the /handler slash command, Feature 7).
+    if session_id and session_id.strip():
+        from nanobot.command.handler_grammar import (
+            HandlerGrammarError,
+            parse_handler_target,
+        )
+
+        try:
+            _target = parse_handler_target(session_id, default_channel="cli")
+        except HandlerGrammarError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--session") from exc
+        session_id = _target.session_key
+
     runtime_config = _load_runtime_config(config, workspace)
     theme = theme.strip().lower()
     if theme not in {"auto", "dark", "light"}:

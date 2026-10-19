@@ -990,6 +990,53 @@ doc accordingly.
 - Manual smoke from inside an active TUI: `/handler assistant:qna#01`
   should switch sessions without losing the active turn.
 
+### 7.8 CLI session-id normalisation (`nanobot agent -s <session-id>`)
+
+Both the native TUI and the classic-prompt CLI paths consume the same
+``-s/--session`` flag. Historically they accepted two distinct naming
+schemes for the same logical session:
+
+- ``assistant:qna#01`` — canonical form, used by the TUI and classic CLI.
+- ``websocket:assistant:qna:01`` — WebUI-side equivalent. The ``websocket:``
+  prefix is the WebUI transport marker; the ``:NN`` pack separator is the
+  WebUI's rewrite of the URL-fragment delimiter ``#``.
+
+Sessions stored under both keys coexisted in the same SQLite store with
+no link between them, so ``nanobot agent -s websocket:assistant:qna:01``
+and ``nanobot agent -s assistant:qna#01`` would silently load two
+different sessions.
+
+The hook at the top of ``nanobot.cli.agent.agent()`` collapses both
+shapes to the canonical form before either CLI branch consumes it,
+reusing ``parse_handler_target`` from §7.2. After the hook runs:
+
+- ``-s websocket:assistant:qna:01`` and ``-s assistant:qna#01`` resolve to
+  the same canonical ``assistant:qna#01`` key.
+- ``-s websocket:cli:any_2026-05-24:04`` becomes
+  ``cli:any_2026-05-24#04``.
+- ``-s cli:direct`` (the classic-prompt default) is unchanged.
+- ``-s`` not given (None) or empty stays as-is.
+- Bad input (``-s foo:qna#01``, ``-s assistant:``, ``-s websocket``)
+  raises ``typer.BadParameter`` with a clean grammar error.
+
+Side effect to be aware of: a session that exists *only* under the WebUI
+form (no canonical counterpart) becomes unreachable via ``-s``. Run
+``nanobot agent -s websocket:<key>`` once after upgrade to discover
+whether any of your workflows depend on such legacy-only sessions.
+
+### 7.9 Verification (additions for §7.8)
+
+- AST parse + import-check for the two updated/new files
+  (``nanobot/cli/agent.py``, ``tests/cli/test_session_id_normalisation.py``).
+- 14 new tests in ``tests/cli/test_session_id_normalisation.py`` covering:
+  - canonical / WebUI / classic-default / None / empty inputs
+  - bad-input rejection (5 cases)
+  - regression test that confirms both CLI invocations from the
+    feature request resolve to the same canonical key.
+- Manual smoke: ``nanobot agent -s websocket:assistant:qna:01 --classic``
+  followed by ``nanobot agent -s assistant:qna#01 --no-tui`` should both
+  load the same session and resume from the same checkpoint.
+
 ---
 
 ## 5. Step-by-Step Merge Procedure (from `main`)
