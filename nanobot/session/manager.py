@@ -380,6 +380,46 @@ class SessionInfo(TypedDict):
 
 
 
+def fork_session(source: Session, target_key: str, before_user_index: int) -> Session | None:
+    """Build a portable fork ending before the requested visible user message."""
+    if before_user_index < 0:
+        return None
+    copied: list[dict[str, Any]] = []
+    user_index = 0
+    found_target = False
+    for message in source.messages:
+        if message.get("role") == "user" and not is_hidden_history_message(message):
+            if user_index == before_user_index:
+                found_target = True
+                break
+            user_index += 1
+        copied.append(public_history_message(message))
+    if user_index == before_user_index:
+        found_target = True
+    if not found_target:
+        return None
+
+    metadata = deepcopy(source.metadata)
+    for key in _FORK_VOLATILE_METADATA_KEYS:
+        metadata.pop(key, None)
+
+    last_consolidated = min(source.last_archived, len(copied))
+    if source.last_archived > len(copied):
+        metadata.pop("_last_summary", None)
+        last_consolidated = 0
+
+    now = datetime.now()
+    target = Session(
+        key=target_key,
+        messages=copied,
+        created_at=now,
+        updated_at=now,
+        metadata=metadata,
+        last_consolidated=last_consolidated,
+    )
+    return target
+
+
 class SessionManager:
     """Locate session storage and expose synchronous administrative operations."""
 
