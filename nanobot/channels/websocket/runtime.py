@@ -28,7 +28,7 @@ from nanobot.bus.events import (
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.channels.websocket.binary_http import BinaryHTTPBridge
-from nanobot.config.schema import Base
+from nanobot.config_base import Base
 from nanobot.session.webui_turns import (
     clear_websocket_turn_if_current,
     mark_websocket_turn_transcript_persistence_failed,
@@ -459,6 +459,7 @@ class WebSocketChannel(BaseChannel):
         is_dm: bool,
         session_key: str | None,
         require_existing_session: bool,
+        session_generation: str | None,
     ) -> None:
         await self._handle_message(
             sender_id=sender_id,
@@ -469,6 +470,7 @@ class WebSocketChannel(BaseChannel):
             is_dm=is_dm,
             session_key=session_key,
             require_existing_session=require_existing_session,
+            session_generation=session_generation,
         )
 
     def _attach(self, connection: ServerConnection, chat_id: str) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import json
 import time
+from datetime import date
 from types import SimpleNamespace
 
 import httpx
@@ -42,6 +43,10 @@ from nanobot.webui.settings_api import (
     update_transcription_settings,
     update_web_search_settings,
 )
+from nanobot.webui.settings_models import (
+    _extract_model_rows,
+    _model_catalog_row_active,
+)
 from nanobot.webui.settings_services import WebUIOAuthFlowRegistry
 
 DYNAMIC_PROVIDER_NAME = "my-company-api"
@@ -76,7 +81,7 @@ def test_docs_version_uses_released_versions_and_falls_back_for_dev() -> None:
 
 
 def test_kimi_k3_only_offers_supported_reasoning_effort_values() -> None:
-    assert _reasoning_effort_values_for("moonshot", "kimi-k3") == ["", "max"]
+    assert _reasoning_effort_values_for("moonshot", "kimi-k3") == ["", "low", "high", "max"]
 
 
 def test_settings_payload_includes_versioned_docs(
@@ -1412,6 +1417,73 @@ def test_update_web_search_settings_can_clear_optional_api_key(
     assert saved.tools.web.search.api_key == ""
 
 
+def test_update_web_search_settings_accepts_deepseek_with_api_key(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.tools.web.search.provider = "duckduckgo"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = update_web_search_settings(
+        {"provider": ["deepseek"], "api_key": ["sk-deepseek-search"]}
+    )
+
+    saved = load_config(config_path)
+    assert saved.tools.web.search.provider == "deepseek"
+    assert saved.tools.web.search.api_key == "sk-deepseek-search"
+    option = next(item for item in payload["web_search"]["providers"] if item["name"] == "deepseek")
+    assert option["label"] == "DeepSeek"
+    assert option["credential"] == "api_key"
+
+
+@pytest.mark.parametrize("environment_key", [None, "ambient-deepseek-key"])
+def test_update_web_search_settings_requires_deepseek_api_key(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    environment_key,
+) -> None:
+    if environment_key is None:
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("DEEPSEEK_API_KEY", environment_key)
+    config_path = tmp_path / "config.json"
+    config = Config()
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    with pytest.raises(WebUISettingsError, match="api_key is required"):
+        update_web_search_settings({"provider": ["deepseek"]})
+
+    assert load_config(config_path).tools.web.search.provider == "duckduckgo"
+
+
+def test_deepseek_explicit_env_reference_survives_settings_updates(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_SEARCH_KEY", "private-deepseek-environment-key")
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.tools.web.search.provider = "deepseek"
+    config.tools.web.search.api_key = "${DEEPSEEK_SEARCH_KEY}"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    for timeout in (30, 45):
+        payload = update_web_search_settings({
+            "provider": ["deepseek"], "timeout": [str(timeout)],
+        })
+        saved = load_config(config_path).tools.web.search
+        assert saved.provider == "deepseek"
+        assert saved.api_key == "${DEEPSEEK_SEARCH_KEY}"
+        assert saved.timeout == timeout
+        assert payload["web_search"]["api_key_hint"]
+        assert "private-deepseek-environment-key" not in str(payload)
+
+
 def test_settings_payload_includes_effective_transcription_config(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2182,6 +2254,74 @@ def test_provider_models_payload_fetches_openai_compatible_models(
     assert payload["models"][1]["context_window"] == 65536
 
 
+def test_model_catalog_row_active_respects_openai_shutdown_date() -> None:
+    ref = date(2026, 9, 29)
+    live = {"id": "gpt-5-nano", "shutdown_date": None}
+    retired = {"id": "gpt-5-chat-latest", "shutdown_date": "2026-07-23"}
+    scheduled = {"id": "gpt-5.9-chat-latest", "shutdown_date": "2026-12-01"}
+
+    assert _model_catalog_row_active(live, on=ref)
+    assert not _model_catalog_row_active(retired, on=ref)
+    assert _model_catalog_row_active(scheduled, on=ref)
+    assert not _model_catalog_row_active(retired, on=date(2026, 7, 23))
+    assert _model_catalog_row_active(retired, on=date(2026, 7, 22))
+
+
+def test_extract_model_rows_skips_shut_down_openai_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "nanobot.webui.settings_models._model_catalog_row_active",
+        lambda row, *, on=None: _model_catalog_row_active(row, on=date(2026, 9, 29)),
+    )
+    body = {
+        "data": [
+            {"id": "gpt-5-nano", "shutdown_date": None},
+            {"id": "gpt-5-chat-latest", "shutdown_date": "2026-07-23"},
+            {"id": "chat-latest", "shutdown_date": None},
+        ]
+    }
+    rows = _extract_model_rows(body)
+    ids = [row["id"] for row in rows]
+    assert ids == ["gpt-5-nano", "chat-latest"]
+
+
+def test_provider_models_payload_omits_openai_models_past_shutdown_date(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.providers.openai.api_key = "sk-test"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    def fake_get(url: str, **kwargs):
+        assert url == "https://api.openai.com/v1/models"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "gpt-5-nano", "owned_by": "system", "shutdown_date": None},
+                    {"id": "gpt-5-chat-latest", "owned_by": "system", "shutdown_date": "2026-07-23"},
+                ]
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr("nanobot.webui.settings_api.httpx.get", fake_get)
+    monkeypatch.setattr(
+        "nanobot.webui.settings_models._model_catalog_row_active",
+        lambda row, *, on=None: _model_catalog_row_active(row, on=date(2026, 9, 29)),
+    )
+
+    payload = provider_models_payload({"provider": ["openai"]})
+
+    assert payload["status"] == "available"
+    assert payload["model_count"] == 1
+    assert payload["models"][0]["id"] == "gpt-5-nano"
+
+
 def test_provider_models_payload_returns_online_openai_codex_models(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2650,15 +2790,6 @@ def test_create_model_configuration_accepts_azure_openai_aad_mode(
     saved = load_config(config_path)
     assert saved.model_presets["azure-aad"].provider == "azure_openai"
     assert saved.model_presets["azure-aad"].model == "my-deployment"
-
-
-def test_azure_openai_spec_no_longer_requires_api_key() -> None:
-    """Contract guard: api_key is optional for azure_openai (AAD fallback)."""
-    from nanobot.webui.settings_api import _provider_requires_api_key
-
-    spec = find_by_name("azure_openai")
-    assert spec is not None
-    assert _provider_requires_api_key(spec) is False
 
 
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses", "anthropic_messages"])

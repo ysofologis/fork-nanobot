@@ -56,6 +56,10 @@ Manual config still works. Same-machine localhost WebUI access can run without a
 
 The WebUI is served by the WebSocket channel on port `8765` by default. The gateway health endpoint, `18790` by default, is not the browser UI.
 
+## Navigate a long conversation
+
+On wide screens, use the message rail on the left to browse saved prompts; click one to jump to it. You can also search prompt summaries from the header. The WebUI loads messages near the selected prompt rather than the entire conversation. Scroll backward or forward to browse, or use the bottom arrow to return to the latest messages. If loading fails, your current content stays visible and you can retry. Older compatible hosts may only support navigation among messages that are already loaded.
+
 ## Sharing access
 
 The WebUI is an administration interface for one nanobot instance. Signed-in WebUI users can work with its saved topics and manage models, channels, Apps, automations, and settings within the gateway's supported capabilities. There are no per-user roles or private topic ownership boundaries. Remote package installation has an additional restriction described under [LAN Access](#lan-access); that restriction does not turn other WebUI users into read-only users.
@@ -99,7 +103,7 @@ Returning users may see an illustrated invitation to star nanobot on GitHub. It 
 
 The sidebar is the topic switcher. Each topic keeps its own history, title, workspace selection, and linked automations. Use a new topic when you want a separate context; use fork when you want to continue from an existing point without changing the original thread.
 
-On touch devices, sidebar action buttons stay visible with larger touch areas for topics, conversation groups, panes, and projects. Tap a title to select it or the adjacent action button for its menu. Desktop actions still appear on hover or keyboard focus. Press Escape in an action menu to return focus to its button and continue with Tab, including from the **Move to** submenu. ArrowLeft leaves the submenu and returns to **Move to** without closing the parent menu. Choosing Rename instead moves focus into the dialog; clicking outside a menu keeps focus at the clicked destination.
+On touch devices, sidebar action buttons stay visible with larger touch areas for topics, conversation groups, panes, and projects. Tap a title to select it or the adjacent action button for its menu. Desktop actions still appear on hover or keyboard focus. Press Escape in an action menu to return focus to its button and continue with Tab, including from the **Move to** submenu. ArrowLeft leaves the submenu and returns to **Move to** without closing the parent menu. Choosing **Rename** for a topic moves focus into its sidebar title. Edit the name in place, then press Enter or choose the checkmark to save; press Escape or choose × to cancel. A failed save keeps the draft and an error beside it so you can retry. Project and conversation-group names still use dialogs. Clicking outside a menu keeps focus at the clicked destination.
 
 Drag a topic within its current sidebar group to keep frequently used work in your preferred order. Drag a topic from the sidebar into the composer when you want to reference it in the next message instead of switching to it.
 
@@ -109,21 +113,29 @@ Open a topic's sidebar action menu and choose **Create group** to turn it into a
 
 Use **Pane layout** to choose columns, rows, a grid, BSP, or a main pane with a stack. Drag a divider to resize panes. Each pane has its own conversation; select one to direct the shared composer to that topic. Group membership and layout persist across refreshes. Grouping topics does not merge their histories.
 
-To bring another topic's work into a conversation, select it from the `@` menu or drag it from the sidebar into the composer. The agent can read the selected session and exchange messages with other saved sessions. See [Composer](#composer) for the distinction between an attached reference and plain text.
+To use work from another topic, mention it with `@` and tell nanobot what you need. See [Composer](#composer) for how to add a topic reference.
 
 ### Activity and context usage
 
 The message timeline shows replies and agent activity. Expand the **Worked for** section to inspect the reasoning and tool activity for a completed turn.
 
+If the connection drops, the host control shows **Reconnecting**. Tasks in persistent topics can continue during the interruption. After reconnecting, task indicators and completed replies update automatically, including topics you have switched away from. Some text generated while disconnected may appear only after the task finishes. [Temporary chats](#temporary-chats) end when their connection is lost.
+
 When the agent writes or edits files, the activity item shows the target path, status, and changed line counts. Choose **Settings → Appearance → File edit display** to control the detail: **Summary** shows the change summary, **Diff** shows available unified patches inline, and **Collapsed diff** lets you expand them with **View diff**. Large diffs may hide unchanged lines or truncate the inline preview. Select the filename in the activity row to open the read-only file preview panel.
 
 Files open as tabs in one preview pane. Select another file to add or switch a tab without reopening the pane; close a tab with its **×**, or close the pane with **Escape**. Tabs and width follow each session while the WebUI remains open. They are kept only in memory and cleared when that session is deleted or the connection ends. The pane overlays the conversation on narrow screens.
 
-Text previews include up to 384 KiB, with a notice when the file is truncated. Large previews show readable text before adding syntax colors; very large or minified source stays plain text. All previewed text remains available for selection and browser search, and the code pane scrolls in both directions.
+Markdown files open in **Preview**, with formatted headings, lists, tables and code blocks. Select **Source** to see the original Markdown with line numbers, then **Preview** to return. The control changes only the display; it does not edit or read the file again. Each newly opened or selected file starts in Preview. Images in Markdown appear as links and do not load automatically. Local links open through the same file access checks; relative paths start from the document's folder. Section-only links remain text. HTML and MDX components do not execute.
+
+Text previews include up to 384 KiB, with a notice when the file is truncated. Large source previews show readable text before adding syntax colors; very large or minified source stays plain text. All previewed text remains available for selection and browser search, and the source pane scrolls in both directions.
 
 PNG, JPEG, GIF and WebP files up to 8 MiB can be previewed as images. Hover or focus an image file reference for a compact quick look, or select it to open the pane. Select the preview image for the full-size viewer, which supports zoom controls, pinch-to-zoom and panning. HTML and SVG files remain read-only source previews rather than executable pages.
 
 A plain image file link does not automatically insert a large image into the reply. Explicit Markdown images appear inline; image attachments use a compact gallery, showing at most four thumbnails before a count of the remaining images. An image already displayed inline is not duplicated in the attachment gallery.
+
+Mermaid code fences show their source while a reply is being generated, then render a diagram when the reply finishes. Choose **Source** or **Diagram** to switch views, or **Copy source** to copy the original code. **Enlarge diagram** opens a viewer with zoom buttons, pinch-to-zoom and drag-to-pan. With the viewport focused, use **+**, **−** and **0** to zoom or reset, and arrow keys to pan; **Escape** closes the viewer.
+
+If a diagram cannot be rendered, its source stays available with an error message. Links, external images and executable HTML inside diagrams are disabled.
 
 Select a file reference to preview it. Right-click the reference or its preview tab to copy its absolute or project-relative path. Keyboard users can focus a reference and press **Shift+F10**. Paths are resolved on the gateway machine, which may not be the computer running your browser. Files outside the project do not have a project-relative path. If a reference cannot be resolved, you can still copy the original reference; the menu does not invent an absolute path. Finder, external editor and terminal launching are not available from this browser menu.
 
@@ -193,13 +205,17 @@ In Restricted mode, ordinary file and shell work stays inside the selected proje
 
 With voice transcription configured, the idle composer uses one button for voice input when empty and Send when text or attachments are present; speech is transcribed into the draft before sending.
 
-The composer supports plain messages, image attachments, voice input when transcription is configured, slash commands, and `@` mentions for installed Apps, MCP presets, or persisted topics. Topics have short, pronounceable handles such as `@luma`; titles are display text rather than addresses. Select a topic from the menu, or drag it from the sidebar, to attach its structured reference. Typing the same text without selecting it remains plain text.
+The composer supports plain messages, image attachments, voice input when transcription is configured, slash commands, and `@` mentions for installed Apps, MCP presets, or saved topics.
+
+To reference another topic, type or paste its complete handle (such as `@luma`), choose it from the `@` menu, or drag it from the sidebar into the composer. Recognized handles are highlighted; unknown handles remain plain text. You can reference up to eight different topics in one message.
+
+Ask nanobot to find, read, or send messages to other saved topics, including those in other projects. For example, “Summarize @luma” or “Send this update to @luma.” Mentioning a topic alone does not send a message to it.
 
 On touch-primary phones and tablets, **Enter** inserts a newline; tap the send arrow to submit. This also applies when a coarse-pointer tablet has a hardware keyboard attached. On desktop, **Enter** sends and **Shift+Enter** adds a newline. An open slash-command or mention menu takes precedence: Enter selects its item.
 
-While a response is running, the send arrow delivers a ready draft as guidance for the active turn; it does not issue a stop command. Other messages already waiting in the queue stay there. On desktop, Enter queues guidance and a second Enter with an empty input sends that queued message immediately. Queued messages also have a **Send now** action. The primary button shows **Stop** when there is no sendable draft; clear the draft or use `/stop` to stop instead of sending it.
+While a response is running, desktop Enter adds your input to one waiting message. Further inputs append in order, separated by newlines, with their attachments and references retained. The complete message is sent once the current response finishes. Press Enter again with an empty input or choose **Send now** to insert it immediately as guidance for the active turn. The send arrow also includes any waiting content when submitting a new draft. Use **Edit message** to revise the complete message or **Delete message** to discard it. If an addition would exceed the message limits, it stays in the input so you can revise it. The primary button shows **Stop** when there is no sendable draft; stopping or a failed send keeps the waiting message for manual sending.
 
-The agent can inspect an attached topic with `read_session`. It can discover other persisted topics with `list_sessions` and send asynchronous messages with `send_session_message`; topic messaging is not limited by workspace scope. The model badge shows the current model or preset and links to model settings when setup is incomplete.
+The model badge shows the current model or preset and links to model settings when setup is incomplete.
 
 For image generation, configure an image provider first and then use the WebUI image mode from the composer. See [`image-generation.md`](./image-generation.md) for provider setup and output behavior.
 

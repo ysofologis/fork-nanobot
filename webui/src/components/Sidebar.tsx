@@ -42,6 +42,7 @@ interface SidebarProps {
   temporarySessions?: ChatSummary[];
   activeKey: string | null;
   loading: boolean;
+  initialLoading?: boolean;
   newChatActive: boolean;
   onNewChat: () => void;
   onSelect: (key: string) => void;
@@ -49,7 +50,7 @@ interface SidebarProps {
   onRequestDelete: (key: string, label: string) => void;
   onRequestDeleteMany?: (items: SidebarDeleteItem[]) => void;
   onTogglePin: (key: string) => void;
-  onRequestRename: (key: string, label: string) => void;
+  onRequestRename: (key: string, title: string) => Promise<void>;
   onRequestRenameTab?: (key: string, label: string) => void;
   onToggleArchive: (key: string) => void;
   paneGroups?: Record<string, SidebarPaneGroup>;
@@ -272,6 +273,7 @@ export function Sidebar(props: SidebarProps) {
             temporarySessions={props.temporarySessions}
             activeKey={props.activeKey}
             loading={props.loading}
+            initialLoading={props.initialLoading}
             emptyLabel={t("chat.noSessions")}
             onSelect={props.onSelect}
             onCloseTemporaryChat={props.onCloseTemporaryChat}
@@ -302,8 +304,6 @@ export function Sidebar(props: SidebarProps) {
             updatedChatIds={props.updatedChatIds}
             recoveryChatIds={props.recoveryChatIds}
             density={props.viewState?.density}
-            showPreviews={props.viewState?.show_previews}
-            showTimestamps={props.viewState?.show_timestamps}
             sort={props.viewState?.sort}
             showArchived={props.showArchived}
             defaultWorkspacePath={props.defaultWorkspacePath}

@@ -35,7 +35,6 @@ from nanobot.providers.factory import ProviderSnapshot, make_provider, provider_
 from nanobot.providers.openai_codex_provider import _strip_model_prefix
 from nanobot.providers.registry import find_by_name
 from nanobot.providers.unconfigured_provider import UnconfiguredProvider
-from nanobot.session.webui_turns import WebuiTurnRoutePolicy
 from nanobot.webui.dev import WebUIDevError
 from nanobot.webui.metadata import (
     WEBUI_MESSAGE_SOURCE_METADATA_KEY,
@@ -125,8 +124,16 @@ class _EmptyGatewaySessionManager:
     def list_sessions(self) -> list[dict[str, object]]:
         return []
 
-    def flush_all(self) -> int:
-        return 0
+    def list_session_metadata(self) -> list[dict[str, object]]:
+        return []
+
+    @property
+    def state(self):
+        return SimpleNamespace(
+            list_sessions=AsyncMock(return_value=[]),
+            record_delivery=AsyncMock(),
+            aclose=AsyncMock(),
+        )
 
 
 def test_gateway_signal_handler_first_signal_stops_and_second_forces() -> None:
@@ -150,9 +157,11 @@ def test_gateway_signal_handler_first_signal_stops_and_second_forces() -> None:
         task = asyncio.create_task(never.wait())
         output: list[str] = []
 
+        tasks: list[asyncio.Task[object]] = []
         restore = cli_gateway_runtime._install_gateway_shutdown_handlers(
-            loop, shutdown_event, [task], output.append,
+            loop, shutdown_event, tasks, output.append,
         )
+        tasks.append(task)
         try:
             callback, args = loop.handlers[int(signal.SIGINT)]
             assert callable(callback)
@@ -175,6 +184,46 @@ def test_gateway_signal_handler_first_signal_stops_and_second_forces() -> None:
         assert int(signal.SIGTERM) in loop.removed
 
     asyncio.run(_run())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("signal_name", ["SIGINT", "SIGBREAK"])
+async def test_gateway_signal_fallback_requests_shutdown_then_forces_and_restores(
+    monkeypatch, signal_name: str,
+) -> None:
+    sigbreak = getattr(signal, "SIGBREAK", 21)
+    monkeypatch.setattr(signal, "SIGBREAK", sigbreak, raising=False)
+    previous = object()
+    handlers = {}
+    monkeypatch.setattr(signal, "getsignal", lambda _signum: previous)
+    monkeypatch.setattr(signal, "signal", lambda signum, handler: handlers.update({signum: handler}))
+    loop = MagicMock()
+    loop.add_signal_handler.side_effect = NotImplementedError
+    shutdown_event = asyncio.Event()
+    task = asyncio.create_task(asyncio.Event().wait())
+    await asyncio.sleep(0)
+    tasks: list[asyncio.Task[object]] = []
+    output: list[str] = []
+    restore = cli_gateway_runtime._install_gateway_shutdown_handlers(
+        loop, shutdown_event, tasks, output.append,
+    )
+    tasks.append(task)
+    signum = getattr(signal, signal_name)
+    try:
+        handlers[signum](signum, None)
+        assert shutdown_event.is_set()
+        assert output == ["\nShutting down... Press Ctrl+C again to force."]
+        assert not task.done()
+        handlers[signum](signum, None)
+        await asyncio.sleep(0)
+        assert task.cancelled()
+    finally:
+        restore()
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    assert handlers == dict.fromkeys((signal.SIGINT, signal.SIGTERM, sigbreak), previous)
 
 
 def test_interactive_tty_mode_restores_line_input(monkeypatch) -> None:
@@ -287,6 +336,9 @@ def test_commit_dream_changes_commits_real_edits(tmp_path) -> None:
 @pytest.fixture
 def mock_paths():
     """Mock config/workspace paths for test isolation."""
+    from importlib import import_module
+
+    import_module("nanobot.channels.validation")
     with patch("nanobot.config.loader.get_config_path") as mock_cp, \
          patch("nanobot.config.loader.save_config") as mock_sc, \
          patch("nanobot.config.loader.load_config") as mock_lc, \
@@ -2041,6 +2093,12 @@ def _patch_cli_command_runtime(
     cron_service=None,
     get_cron_dir=None,
 ) -> None:
+    from importlib import import_module
+
+    # Load adapter contracts before replacing runtime factories for this invocation.
+    import_module("nanobot.session.webui_turns")
+    import_module("nanobot.channels.validation")
+    import_module("nanobot.channels.websocket.runtime")
     provider_factory = make_provider or (lambda _config: _fake_provider())
 
     monkeypatch.setattr(
@@ -2107,7 +2165,7 @@ def test_heartbeat_empty_response_is_not_evaluated(
     bus.publish_outbound = AsyncMock()
     seen: dict[str, object] = {}
 
-    class _FakeSessionManager:
+    class _FakeSessionManager(_EmptyGatewaySessionManager):
         def __init__(self, _workspace: Path) -> None:
             pass
 
@@ -2535,7 +2593,7 @@ def test_webui_missing_runtime_env_fails_before_starting_gateway(
     assert result.exit_code == 1
     assert missing_env in result.stdout
     assert "nanobot status --config" in result.stdout
-    assert config_file.name in result.stdout
+    assert config_file.name in _without_rendered_line_breaks(result.stdout)
     assert "Traceback" not in result.stdout
     assert f"${{{missing_env}}}" in config_file.read_text(encoding="utf-8")
 
@@ -3147,7 +3205,7 @@ def test_gateway_unbound_agent_cron_is_skipped(
         def add_message(self, role: str, content: str, **kwargs) -> None:
             self.messages.append({"role": role, "content": content, **kwargs})
 
-    class _FakeSessionManager:
+    class _FakeSessionManager(_EmptyGatewaySessionManager):
         def __init__(self, _workspace: Path) -> None:
             self.session = _FakeSession()
             seen["session_manager"] = self
@@ -3277,7 +3335,7 @@ def test_gateway_bound_cron_runs_as_session_turn(
     )
     monkeypatch.setattr("nanobot.bus.queue.MessageBus", lambda: bus)
 
-    class _FakeSessionManager:
+    class _FakeSessionManager(_EmptyGatewaySessionManager):
         def __init__(self, _workspace: Path) -> None:
             pass
 
@@ -3492,7 +3550,7 @@ def test_gateway_local_trigger_queue_submits_agent_turns(
     class _FakeContext:
         memory = _FakeMemory()
 
-    class _FakeSessionManager:
+    class _FakeSessionManager(_EmptyGatewaySessionManager):
         def flush_all(self) -> int:
             return 0
 
@@ -3600,8 +3658,27 @@ def test_gateway_local_trigger_queue_submits_agent_turns(
     assert isinstance(turn_delivery_factory, TurnDeliveryFactory)
     assert turn_delivery_factory.bus is bus
     assert seen["cron_reconciliation"] == ["remove:dream", "remove:heartbeat", "status"]
-    assert isinstance(turn_delivery_factory.route_policy, WebuiTurnRoutePolicy)
-    assert turn_delivery_factory.route_policy.sessions is agent.sessions
+    websocket_delivery = turn_delivery_factory.create(
+        InboundMessage(
+            channel="websocket", sender_id="user", chat_id="chat", content="Hello",
+            metadata={"webui": True, "webui_turn_id": "turn-1"},
+        ),
+        "websocket:chat",
+    )
+    assert websocket_delivery.route.turn_id == "turn-1"
+    assert websocket_delivery.route.metadata["_websocket_turn_owner"]
+    slack_delivery = turn_delivery_factory.create(
+        InboundMessage(
+            channel="system", sender_id="subagent", chat_id="slack:C1", content="Done",
+        ),
+        "slack:C1:1234.5678",
+    )
+    assert slack_delivery.route.metadata["slack"] == {"thread_ts": "1234.5678"}
+    session_metadata = {}
+    slack_delivery.remember_session_route(session_metadata)
+    assert session_metadata["_compaction_route"] == {
+        "channel": "slack", "chat_id": "C1", "metadata": {"slack": {"thread_ts": "1234.5678"}},
+    }
 
 
 def test_gateway_workspace_override_does_not_migrate_legacy_cron(
@@ -3773,7 +3850,7 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
     config.gateway.port = 18791
     captured: dict[str, object] = {}
 
-    class _FakeSessionManager:
+    class _FakeSessionManager(_EmptyGatewaySessionManager):
         def flush_all(self) -> int:
             return 0
 
@@ -3976,7 +4053,7 @@ def test_gateway_agent_task_owns_initial_mcp_provider_close(
     config.gateway.port = 18791
     seen: dict[str, object] = {}
 
-    class _FakeSessionManager:
+    class _FakeSessionManager(_EmptyGatewaySessionManager):
         def flush_all(self) -> int:
             return 0
 
@@ -4106,19 +4183,29 @@ def test_gateway_agent_task_owns_initial_mcp_provider_close(
     assert isinstance(hook, cli_gateway_runtime._MCPReadinessHook)
 
 
+@pytest.mark.parametrize("shutdown_signal", [
+    None,
+    pytest.param(signal.SIGINT, id="SIGINT"),
+    pytest.param(
+        getattr(signal, "SIGBREAK", None),
+        marks=pytest.mark.skipif(not hasattr(signal, "SIGBREAK"), reason="Windows SIGBREAK only"),
+        id="SIGBREAK",
+    ),
+])
 def test_gateway_shutdown_event_exits_forever_runtime_tasks(
     monkeypatch,
     tmp_path: Path,
+    shutdown_signal: int | None,
 ) -> None:
     config_file = _write_instance_config(tmp_path)
     config = Config()
     config.gateway.port = 18791
     seen: dict[str, object] = {}
     shutdown_order: list[str] = []
-
-    class _FakeSessionManager:
-        def flush_all(self) -> int:
-            return 0
+    channel_started = asyncio.Event()
+    channel_draining = asyncio.Event()
+    channel_finished = asyncio.Event()
+    channels_stopping = asyncio.Event()
 
     class _FakeAgentLoop(_GatewayAgentContractStub):
         @classmethod
@@ -4128,7 +4215,7 @@ def test_gateway_shutdown_event_exits_forever_runtime_tasks(
         def __init__(self, **_kwargs) -> None:
             self.model = "test-model"
             self.provider = object()
-            self.sessions = _FakeSessionManager()
+            self.sessions = _EmptyGatewaySessionManager()
             self.runtime_resolver = MagicMock()
 
         def llm_runtime(self) -> None:
@@ -4151,15 +4238,25 @@ def test_gateway_shutdown_event_exits_forever_runtime_tasks(
             self.enabled_channels = ["websocket"]
 
         async def start_all(self) -> None:
+            channel_started.set()
             try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if shutdown_signal is None:
+                    raise
+                channel_draining.set()
                 await asyncio.Event().wait()
             finally:
                 seen["channel_task_cleaned_up"] = True
+                channel_finished.set()
                 shutdown_order.append("channel_task_cleaned_up")
 
         async def stop_all(self) -> None:
             seen["channels_stopped"] = True
             shutdown_order.append("channels_stopped")
+            channels_stopping.set()
+            if shutdown_signal is not None:
+                await asyncio.wait_for(channel_finished.wait(), timeout=1)
 
     class _FakeCronService:
         def __init__(self, _store_path: Path) -> None:
@@ -4190,14 +4287,29 @@ def test_gateway_shutdown_event_exits_forever_runtime_tasks(
     async def _fake_start_server(_handler, _host: str, _port: int):
         return _FakeServer()
 
-    def _fake_install_shutdown_handlers(_loop, event, _tasks, _print_status):
+    install_shutdown_handlers = cli_gateway_runtime._install_gateway_shutdown_handlers
+
+    def _install_shutdown_handlers(loop, event, tasks, print_status):
+        restore = install_shutdown_handlers(loop, event, tasks, print_status)
+
         async def _trigger_shutdown() -> None:
-            await asyncio.sleep(0)
-            event.set()
+            await channel_started.wait()
+            if shutdown_signal is None:
+                event.set()
+                return
+            signal.raise_signal(shutdown_signal)
+            await channel_draining.wait()
+            await channels_stopping.wait()
+            assert event.is_set()
+            assert seen["agent_stopped"] is True
+            assert not channel_finished.is_set()
+            seen["graceful_shutdown_requested"] = True
+            signal.raise_signal(shutdown_signal)
 
         asyncio.create_task(_trigger_shutdown())
 
         def _restore() -> None:
+            restore()
             seen["shutdown_handlers_restored"] = True
 
         return _restore
@@ -4214,7 +4326,7 @@ def test_gateway_shutdown_event_exits_forever_runtime_tasks(
     monkeypatch.setattr("asyncio.start_server", _fake_start_server)
     monkeypatch.setattr(
         "nanobot.cli.gateway_runtime._install_gateway_shutdown_handlers",
-        _fake_install_shutdown_handlers,
+        _install_shutdown_handlers,
     )
 
     result = runner.invoke(app, ["gateway", "--config", str(config_file)])
@@ -4227,6 +4339,8 @@ def test_gateway_shutdown_event_exits_forever_runtime_tasks(
     assert seen["channels_stopped"] is True
     assert seen["cron_stopped"] is True
     assert seen["shutdown_handlers_restored"] is True
+    if shutdown_signal is not None:
+        assert seen["graceful_shutdown_requested"] is True
     # Channel cleanup must run before cancellation drains the manager task.
     # DingTalk's stream SDK can otherwise swallow cancellation and reconnect.
     assert shutdown_order == ["channels_stopped", "channel_task_cleaned_up"]

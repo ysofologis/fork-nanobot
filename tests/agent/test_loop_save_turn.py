@@ -124,7 +124,10 @@ def _make_full_loop(tmp_path: Path) -> AgentLoop:
     provider.get_default_model.return_value = "test-model"
     provider.generation = SimpleNamespace(max_tokens=4096)
     provider.chat_stream_with_retry = AsyncMock(return_value=LLMResponse(content="Test title"))
-    loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+    bus = MessageBus()
+    loop = AgentLoop(
+        bus=bus, provider=provider, workspace=tmp_path, model="test-model",
+    )
     WebuiTurnCoordinator(
         bus=loop.bus,
         sessions=loop.sessions,
@@ -158,12 +161,12 @@ def test_agent_loop_llm_runtime_reflects_current_provider_and_model(tmp_path: Pa
     assert runtime.model == "next-model"
 
 
-def test_persist_cron_turn_uses_distinct_history_marker(tmp_path: Path) -> None:
+async def test_persist_cron_turn_uses_distinct_history_marker(tmp_path: Path) -> None:
     loop = _make_full_loop(tmp_path)
-    session = loop.sessions.get_or_create("websocket:auto")
+    session = await loop.sessions.state.get("websocket:auto")
     prompt_ref = {"id": "cron.agent_turn.reminder", "version": 1, "sha256": "abc"}
 
-    persisted = loop._persist_user_message_early(
+    persisted = await loop._persist_user_message_early(
         InboundMessage(
             channel="websocket",
             sender_id="cron",
@@ -200,40 +203,29 @@ def test_persist_cron_turn_uses_distinct_history_marker(tmp_path: Path) -> None:
     assert message["cron_prompt_ref"] == prompt_ref
 
 
-def test_persist_user_message_acknowledges_durable_followup(tmp_path: Path) -> None:
+async def test_persist_user_message_acknowledges_durable_followup(tmp_path: Path) -> None:
     loop = _make_full_loop(tmp_path)
-    session = loop.sessions.get_or_create("websocket:chat")
-    session.metadata[PENDING_FOLLOWUPS_KEY] = [
-        {
-            "id": "followup-1",
-            "sender_id": "user",
-            "chat_id": "chat",
-            "content": "queued while busy",
-            "media": [],
-            "metadata": {},
-        }
-    ]
-
-    persisted = loop._persist_user_message_early(
-        InboundMessage(
-            channel="websocket",
-            sender_id="user",
-            chat_id="chat",
-            content="queued while busy",
-            metadata={PENDING_FOLLOWUP_ID_KEY: "followup-1"},
-        ),
-        session,
+    loop.provider.aclose = AsyncMock()
+    message = InboundMessage(
+        channel="websocket", sender_id="user", chat_id="chat", content="queued while busy",
     )
+    try:
+        identifier = await loop.sessions.state.queue_followup(message.session_key, message)
+        message.metadata[PENDING_FOLLOWUP_ID_KEY] = identifier
+        # Control: unlike mid-turn injection, this draft already sees the journal.
+        session = await loop.sessions.state.get(message.session_key)
+        assert await loop._persist_user_message_early(message, session)
+        assert PENDING_FOLLOWUPS_KEY not in session.metadata
+        assert PENDING_FOLLOWUPS_KEY not in (await loop.sessions.state.get(session.key)).metadata
+    finally:
+        await loop.aclose()
 
-    assert persisted is True
-    assert PENDING_FOLLOWUPS_KEY not in session.metadata
 
-
-def test_persist_local_trigger_turn_uses_hidden_automation_marker(tmp_path: Path) -> None:
+async def test_persist_local_trigger_turn_uses_hidden_automation_marker(tmp_path: Path) -> None:
     loop = _make_full_loop(tmp_path)
-    session = loop.sessions.get_or_create("websocket:auto")
+    session = await loop.sessions.state.get("websocket:auto")
 
-    persisted = loop._persist_user_message_early(
+    persisted = await loop._persist_user_message_early(
         InboundMessage(
             channel="websocket",
             sender_id="trigger",
@@ -381,6 +373,7 @@ async def test_generate_webui_title_only_for_marked_webui_sessions(tmp_path: Pat
     )
 
     assert generated is True
+    session = await loop.sessions.state.get(session.key)
     assert session.metadata[WEBUI_TITLE_METADATA_KEY] == "优化 WebUI 侧边栏"
     loop.provider.chat_stream_with_retry.assert_awaited_once()
     assert loop.provider.chat_stream_with_retry.await_args.kwargs["max_tokens"] == TITLE_GENERATION_MAX_TOKENS
@@ -507,6 +500,7 @@ async def test_projected_title_generation_skips_existing_chat_title(tmp_path: Pa
     unified.add_message("assistant", "以下是临期 IP 列表。")
     chat = loop.sessions.get_or_create("websocket:chat-existing")
     chat.metadata[WEBUI_TITLE_METADATA_KEY] = "Existing title"
+    loop.sessions.save(chat)
     loop.sessions.save(unified)
 
     generated = await maybe_generate_webui_title_after_turn(
@@ -591,34 +585,6 @@ def test_save_turn_commits_summary_boundary_without_rewriting_raw_history() -> N
         "full current result",
         "done",
     ]
-
-
-def test_save_turn_acknowledges_every_merged_recovery_followup() -> None:
-    """Persisting a merged injected row retires every durable follow-up ID."""
-    loop = _mk_loop()
-    session = Session(
-        key="test:recovery-followups",
-        metadata={
-            PENDING_FOLLOWUPS_KEY: [
-                {"id": "first"},
-                {"id": "second"},
-            ]
-        },
-    )
-
-    loop._save_turn(
-        session,
-        [
-            {
-                "role": "user",
-                "content": "first\n\nsecond",
-                PENDING_FOLLOWUP_ID_KEY: ["first", "second"],
-            }
-        ],
-        skip=0,
-    )
-
-    assert PENDING_FOLLOWUPS_KEY not in session.metadata
 
 
 def test_save_turn_keeps_image_placeholder_and_runtime_context() -> None:
@@ -1061,7 +1027,7 @@ async def test_runtime_checkpoint_keeps_provider_state_out_of_public_metadata(
     loop.provider.chat_stream_with_retry = AsyncMock(
         return_value=LLMResponse(content="done", provider_state=state)
     )
-    session = loop.sessions.get_or_create("cli:private-checkpoint")
+    session = await loop.sessions.state.get("cli:private-checkpoint")
 
     await loop._run_agent_loop(
         TranscriptInput(
@@ -1086,8 +1052,9 @@ async def test_runtime_checkpoint_keeps_provider_state_out_of_public_metadata(
     public_payload = loop.sessions.read_session_file(session.key)
     assert public_payload is not None
     assert "private-checkpoint-blob" not in json.dumps(public_payload)
-    raw = loop.sessions._get_session_path(session.key).read_text(encoding="utf-8")
-    assert "private-checkpoint-blob" in raw
+    stored = loop.sessions.read_session_snapshot(session.key)
+    assert stored is not None and stored.provider_state is not None
+    assert stored.provider_state.payload == state.payload
 
 
 @pytest.mark.asyncio
@@ -1118,7 +1085,7 @@ async def test_subagent_followup_stages_provider_state_before_turn_runs(
     session = loop.sessions.get_or_create("cli:subagent-crash")
     session.provider_state = _provider_state()
     loop.sessions.save(session)
-    save_completed_subagent(loop, "sub-1", session.key)
+    await save_completed_subagent(loop, "sub-1", session.key)
 
     msg = InboundMessage(
         channel="system",
@@ -1150,7 +1117,7 @@ async def test_subagent_followup_state_is_durable_before_prompt_assembly(
     session = loop.sessions.get_or_create("cli:subagent-prompt-crash")
     session.provider_state = _provider_state()
     loop.sessions.save(session)
-    save_completed_subagent(loop, "sub-1", session.key)
+    await save_completed_subagent(loop, "sub-1", session.key)
 
     msg = InboundMessage(
         channel="system",
@@ -1184,7 +1151,7 @@ async def test_subagent_redelivery_does_not_duplicate_staged_provider_input(
     session = loop.sessions.get_or_create("cli:subagent-redelivery")
     session.provider_state = _provider_state()
     loop.sessions.save(session)
-    save_completed_subagent(loop, "sub-1", session.key)
+    await save_completed_subagent(loop, "sub-1", session.key)
     msg = InboundMessage(
         channel="system",
         sender_id="subagent",
@@ -1234,7 +1201,7 @@ async def test_subagent_followup_clears_state_before_compatibility_failure(
     session = loop.sessions.get_or_create("cli:subagent-compat-crash")
     session.provider_state = _provider_state()
     loop.sessions.save(session)
-    save_completed_subagent(loop, "sub-1", session.key)
+    await save_completed_subagent(loop, "sub-1", session.key)
 
     msg = InboundMessage(
         channel="system",
@@ -1710,7 +1677,8 @@ async def test_process_message_uses_explicit_session_for_goal_context(
     assert result is not None
     assert result.content == "ok"
     kwargs = loop._run_agent_loop.call_args.kwargs
-    assert kwargs["session"] is system_session
+    assert kwargs["session"].key == system_session.key
+    assert kwargs["session"] is not system_session
     assert kwargs["request_context"].session_key == "system"
     assert GOAL_STATE_KEY not in kwargs["session"].metadata
 
@@ -1722,16 +1690,16 @@ async def test_run_agent_loop_continuation_reads_latest_goal_metadata(
     from nanobot.agent.runner import AgentRunResult
 
     loop = _make_full_loop(tmp_path)
-    session = loop.sessions.get_or_create("websocket:late-goal")
+    session = await loop.sessions.state.get("websocket:late-goal")
     seen: dict[str, str | None] = {}
 
     async def fake_run(spec):
         assert callable(spec.continuation_callback)
-        session.metadata[GOAL_STATE_KEY] = {
+        await loop.sessions.state.update_metadata(session.key, {GOAL_STATE_KEY: {
             "status": "active",
             "objective": "Goal created during this runner call.",
-        }
-        seen["goal_continue"] = spec.continuation_callback()
+        }})
+        seen["goal_continue"] = await spec.continuation_callback()
         return AgentRunResult(
             final_content="ok",
             messages=[{"role": "assistant", "content": "ok"}],
@@ -1871,7 +1839,7 @@ async def test_stop_preserves_runtime_checkpoint_for_next_turn(tmp_path: Path) -
 
     async def interrupted_run_agent_loop(_transcript_input, *, session=None, **_kwargs):
         assert session is not None
-        loop._set_runtime_checkpoint(
+        await loop._set_runtime_checkpoint(
             session,
             {
                 "assistant_message": {
@@ -1915,7 +1883,21 @@ async def test_stop_preserves_runtime_checkpoint_for_next_turn(tmp_path: Path) -
     first_msg = InboundMessage(channel="feishu", sender_id="u1", chat_id="c4", content="keep progress")
     task = asyncio.create_task(loop._process_message(first_msg))
     loop._active_tasks[first_msg.session_key] = {task}
-    await asyncio.wait_for(checkpoint_saved.wait(), timeout=1.0)
+    checkpoint_wait = asyncio.create_task(checkpoint_saved.wait())
+    try:
+        done, _ = await asyncio.wait(
+            (checkpoint_wait, task), timeout=5, return_when=asyncio.FIRST_COMPLETED,
+        )
+        if task in done:
+            await task
+        assert checkpoint_wait in done, "the turn did not reach its durable checkpoint"
+    except BaseException:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+    finally:
+        checkpoint_wait.cancel()
+        await asyncio.gather(checkpoint_wait, return_exceptions=True)
 
     stop_msg = InboundMessage(channel="feishu", sender_id="u1", chat_id="c4", content="/stop")
     stop_ctx = CommandContext(msg=stop_msg, session=None, key=stop_msg.session_key, raw="/stop", loop=loop)
@@ -1975,7 +1957,7 @@ async def test_system_subagent_followup_is_persisted_before_prompt_assembly(tmp_
     session.add_message("user", "question")
     session.add_message("assistant", "working")
     loop.sessions.save(session)
-    save_completed_subagent(loop, "sub-1", session.key)
+    await save_completed_subagent(loop, "sub-1", session.key)
 
     runtime = loop.llm_runtime()
     seen: dict[str, object] = {}
@@ -2078,7 +2060,7 @@ async def test_turn_usage_is_persisted_with_the_saved_session(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_system_subagent_followup_does_not_log_content(tmp_path: Path) -> None:
     loop = _make_full_loop(tmp_path)
-    save_completed_subagent(loop, "sub-logs", "cli:logs")
+    await save_completed_subagent(loop, "sub-logs", "cli:logs")
 
     async def fake_run_agent_loop(transcript_input, **_kwargs):
         initial_messages = _assembled_messages(loop.context, transcript_input)
@@ -2115,7 +2097,7 @@ async def test_system_subagent_followup_does_not_log_content(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_system_subagent_followup_uses_common_turn_lifecycle(tmp_path: Path) -> None:
     loop = _make_full_loop(tmp_path)
-    save_completed_subagent(loop, "sub-1", "cli:test")
+    await save_completed_subagent(loop, "sub-1", "cli:test")
     visited: list[str] = []
 
     for name in (
@@ -2244,7 +2226,7 @@ async def test_multiple_subagent_followups_all_persist_as_standalone_history(tmp
     loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
 
     for idx in range(3):
-        save_completed_subagent(loop, f"sub-{idx}", "cli:multi")
+        await save_completed_subagent(loop, f"sub-{idx}", "cli:multi")
         await loop._process_message(
             InboundMessage(
                 channel="system",
@@ -2362,7 +2344,7 @@ async def test_system_subagent_followup_uses_thread_session_and_slack_metadata(t
     thread_session = loop.sessions.get_or_create("slack:C123:1700.42")
     thread_session.add_message("user", "thread question")
     loop.sessions.save(thread_session)
-    save_completed_subagent(loop, "sub-1", thread_session.key)
+    await save_completed_subagent(loop, "sub-1", thread_session.key)
 
     seen: dict[str, object] = {}
 

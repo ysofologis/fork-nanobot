@@ -13,7 +13,8 @@ import { Trans, useTranslation } from "react-i18next";
 import { channelUiPresentation } from "@/channel-plugins/registry";
 import { StarPrompt } from "@/components/StarPrompt";
 import { Sidebar } from "@/components/Sidebar";
-import { RemoteInstances, useRemoteConnections } from "@/components/remote/RemoteInstances";
+import { RemoteInstances } from "@/components/remote/RemoteInstances";
+import { useRemoteConnections } from "@/components/remote/remote-context";
 import { RemoteConnectionsPage } from "@/components/remote/RemoteConnectionsPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { SidebarResizeHandle, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH } from "@/components/SidebarResizeHandle";
@@ -48,6 +49,7 @@ import { floatingSurfaceElevationClassName } from "@/components/ui/floating-surf
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 
 import { useSessions } from "@/hooks/useSessions";
+import { useReconnectRuns } from "@/hooks/useReconnectRuns";
 import { useDeferredTitleRefresh } from "@/hooks/useDeferredTitleRefresh";
 import { useSidebarState } from "@/hooks/useSidebarState";
 import { useSkills } from "@/hooks/useSkills";
@@ -163,26 +165,10 @@ const DeleteConfirm = lazy(async () => {
   const module = await import("@/components/DeleteConfirm");
   return { default: module.DeleteConfirm };
 });
-const RenameChatDialog = lazy(async () => {
-  const module = await import("@/components/RenameChatDialog");
-  return { default: module.RenameChatDialog };
+const RenameDialog = lazy(async () => {
+  const module = await import("@/components/RenameDialog");
+  return { default: module.RenameDialog };
 });
-
-function SurfaceLoadingFallback({ label }: { label?: string }) {
-  const { t } = useTranslation();
-  return (
-    <div
-      aria-busy="true"
-      className="flex h-full w-full flex-col gap-5 px-5 py-8 sm:px-8 lg:px-12"
-    >
-      <span className="sr-only">{label ?? t("settings.status.loading")}</span>
-      <div className="h-4 w-20 animate-pulse rounded bg-muted/70 motion-reduce:animate-none" />
-      <div className="h-9 w-48 animate-pulse rounded bg-muted/70 motion-reduce:animate-none" />
-      <div className="mt-4 h-12 w-full max-w-3xl animate-pulse rounded-md bg-muted/55 motion-reduce:animate-none" />
-      <div className="h-28 w-full max-w-3xl animate-pulse rounded-md bg-muted/40 motion-reduce:animate-none" />
-    </div>
-  );
-}
 
 const SETTINGS_SECTION_KEYS: SettingsSectionKey[] = [
   "capabilities",
@@ -1193,21 +1179,27 @@ function Shell({
   const remoteConnectionsRef = useRef(remoteConnections);
   remoteConnectionsRef.current = remoteConnections;
   const { client, getToken } = useClient();
+  useReconnectRuns(client, getToken);
   const {
     sessions,
     loading,
+    initialLoading: sessionsInitialLoading,
+    error: sessionsError,
     refresh,
     createChat,
     forkChat,
     deleteChat,
     getSessionAutomations,
   } = useSessions();
+  // Failed reads retain an empty list or partial reload cache, not proof of deletion.
+  const sessionsLoaded = !loading && sessionsError === null;
   const {
     state: sidebarState,
     loading: sidebarStateLoading,
     update: updateSidebarState,
+    rename: onRequestRename,
   } =
-    useSidebarState(sessions, !loading);
+    useSidebarState(sessions, sessionsLoaded);
   const initialRouteRef = useRef<ShellRoute | null>(null);
   if (!initialRouteRef.current) initialRouteRef.current = readShellRoute();
   const [activeKey, setActiveKey] = useState<string | null>(
@@ -1255,10 +1247,6 @@ function Shell({
   const [pendingDelete, setPendingDelete] = useState<{
     items: SidebarDeleteItem[];
     automations?: SessionAutomationJob[];
-  } | null>(null);
-  const [pendingRename, setPendingRename] = useState<{
-    key: string;
-    label: string;
   } | null>(null);
   const [pendingTabRename, setPendingTabRename] = useState<{
     key: string;
@@ -1596,7 +1584,7 @@ function Shell({
   }, [refreshWorkspaces]);
 
   useEffect(() => {
-    if (loading) return;
+    if (!sessionsLoaded) return;
     const knownChatIds = new Set(sessions.map((session) => session.chatId));
     setUpdatedChatIds((current) => {
       const next = new Set(
@@ -1608,16 +1596,16 @@ function Shell({
       const entries = Object.entries(current).filter(([chatId]) => knownChatIds.has(chatId));
       return entries.length === Object.keys(current).length ? current : Object.fromEntries(entries);
     });
-  }, [loading, sessions]);
+  }, [sessionsLoaded, sessions]);
 
   useEffect(() => {
-    if (loading || sidebarStateLoading) return;
+    if (!sessionsLoaded || sidebarStateLoading) return;
     const validKeys = new Set(sessions.map((session) => session.key));
     updateWorkbenchState((current) => {
       return reconcileWorkbench(current, validKeys);
     });
   }, [
-    loading,
+    sessionsLoaded,
     sidebarStateLoading,
     sessions,
     updateWorkbenchState,
@@ -1699,25 +1687,6 @@ function Shell({
     for (const chatId of activeRunIds) {
       client.attach(chatId);
     }
-    setRunningChatIds((current) => {
-      let changed = false;
-      const next = new Set(current);
-      for (const chatId of activeRunIds) {
-        if (!next.has(chatId)) changed = true;
-        next.add(chatId);
-      }
-      if (!changed) return current;
-      runningChatIdsRef.current = next;
-      return next;
-    });
-    setUpdatedChatIds((current) => {
-      let changed = false;
-      const next = new Set(current);
-      for (const chatId of activeRunIds) {
-        if (next.delete(chatId)) changed = true;
-      }
-      return changed ? next : current;
-    });
   }, [client, loading, sessions]);
 
   const openHostSidebar = useCallback(() => {
@@ -1994,32 +1963,6 @@ function Shell({
       });
     },
     [updateSidebarState],
-  );
-
-  const onRequestRename = useCallback((key: string, label: string) => {
-    setPendingRename({ key, label });
-  }, []);
-
-  const onConfirmRename = useCallback(
-    (title: string) => {
-      if (!pendingRename) return;
-      const key = pendingRename.key;
-      setPendingRename(null);
-      void updateSidebarState((current) => {
-        const titleOverrides = { ...current.title_overrides };
-        const cleaned = title.trim();
-        if (cleaned) {
-          titleOverrides[key] = cleaned;
-        } else {
-          delete titleOverrides[key];
-        }
-        return {
-          ...current,
-          title_overrides: titleOverrides,
-        };
-      });
-    },
-    [pendingRename, updateSidebarState],
   );
 
   const onRequestRenameTab = useCallback((key: string, label: string) => {
@@ -2796,12 +2739,13 @@ function Shell({
     : activeKey;
 
   const sidebarProps = {
-    sessions: sidebarTopicSessions,
-    temporarySessions: temporarySessionList,
+    sessions: sidebarStateLoading ? [] : sidebarTopicSessions,
+    temporarySessions: sidebarStateLoading ? [] : temporarySessionList,
     activeKey: !managingConnections && view === "chat"
       ? (temporaryChatActive ? activeKey : activeSidebarKey)
       : null,
-    loading,
+    loading: loading || sidebarStateLoading,
+    initialLoading: sessionsInitialLoading || sidebarStateLoading,
     newChatActive: !managingConnections && view === "chat" && activeKey === null,
     onNewChat,
     onSelect: onSelectSidebarItem,
@@ -2939,6 +2883,12 @@ function Shell({
             >
               <SheetContent
                 ref={mobileSidebarRef}
+                onEscapeKeyDown={(event) => {
+                  if (event.target instanceof Element
+                    && event.target.closest("[data-sidebar-topic-rename]")) {
+                    event.preventDefault();
+                  }
+                }}
                 onOpenAutoFocus={(event) => {
                   // Keep opening navigation from focusing the search tooltip trigger.
                   event.preventDefault();
@@ -2989,7 +2939,7 @@ function Shell({
               )}
             >
               <ThreadVisibilityContext.Provider value={localActive && !managingConnections && view === "chat"}>
-                <Suspense fallback={<StartupShell embedded />}>
+                <Suspense fallback={<StartupShell embedded surface="chat" sidebarExpanded={hostSidebarOpen} />}>
                   <PaneWorkbench
                     panes={renderedWorkbenchPanes}
                     activePaneKey={renderedActivePaneKey}
@@ -3102,6 +3052,7 @@ function Shell({
                           headerPortalTarget={context.headerPortalTarget}
                           headerActive={context.active}
                           composerPortalTarget={context.composerPortalTarget}
+                          navigationFrame={context.navigationFrame}
                           composerActive={context.active}
                           composerInputAriaLabel={t("workbench.composerAria", {
                             title: pane.title,
@@ -3139,7 +3090,7 @@ function Shell({
                   mainNavigationExpanded={showMainSidebar && hostSidebarOpen}
                   hostChromeInset={showHostChrome}
                   onBackToChat={onBackToChat}
-                /> : <Suspense fallback={<SurfaceLoadingFallback />}>
+                /> : <Suspense fallback={<StartupShell embedded surface={view} sidebarExpanded={hostSidebarOpen} />}>
                   <SettingsView
                     registerExitGuard={registerSettingsExitGuard}
                     theme={theme}
@@ -3190,19 +3141,9 @@ function Shell({
             />
           </Suspense>
         ) : null}
-        {pendingRename ? (
-          <Suspense fallback={null}>
-            <RenameChatDialog
-              open
-              title={pendingRename.label}
-              onCancel={() => setPendingRename(null)}
-              onConfirm={onConfirmRename}
-            />
-          </Suspense>
-        ) : null}
         {pendingTabRename ? (
           <Suspense fallback={null}>
-            <RenameChatDialog
+            <RenameDialog
               open
               title={pendingTabRename.label}
               dialogTitle={t("workbench.renameGroupTitle")}
@@ -3215,7 +3156,7 @@ function Shell({
         ) : null}
         {pendingProjectRename ? (
           <Suspense fallback={null}>
-            <RenameChatDialog
+            <RenameDialog
               open
               title={pendingProjectRename.label}
               dialogTitle={t("chat.renameProjectTitle")}

@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Window as HappyWindow } from "happy-dom";
 
 import i18n from "@/i18n";
+import { useSessions } from "@/hooks/useSessions";
+import { activateReloadCache, clearReloadCache, writeReloadCache } from "@/lib/reload-cache";
 import type {
   ChatSummary,
   ConnectionStatus,
@@ -61,6 +63,7 @@ function mockFetchRoutes(routes: Record<string, unknown>): void {
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const route = routes[String(input)]
+        ?? (String(input) === "/api/webui/sidebar-state" ? {} : undefined)
         ?? (/^\/api\/sessions\/[^/]+\/subagents$/.test(String(input)) ? { tasks: [] } : undefined);
       const body =
         typeof route === "function"
@@ -169,7 +172,7 @@ vi.mock("@/hooks/useSessions", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/hooks/useSessions")>();
   return {
     ...actual,
-    useSessions: () => {
+    useSessions: vi.fn(function useMockSessions() {
       const [sessions, setSessions] = React.useState(mockSessions);
       return {
         sessions,
@@ -203,7 +206,7 @@ vi.mock("@/hooks/useSessions", async (importOriginal) => {
           return { deleted: true };
         },
       };
-    },
+    }),
   };
 });
 
@@ -254,6 +257,7 @@ vi.mock("@/lib/nanobot-client", async (importOriginal) => {
     onRuntimeModelUpdate = () => () => {};
     onError = () => () => {};
     onChat = () => () => {};
+    onTranscript = () => () => {};
     onSessionUpdate = (handler: (
       chatId: string,
       scope?: string,
@@ -270,8 +274,14 @@ vi.mock("@/lib/nanobot-client", async (importOriginal) => {
       runStatusHandlers.add(handler);
       return () => runStatusHandlers.delete(handler);
     };
+    onRunCompletion = () => () => {};
     getRunStartedAt = () => null;
     getRunTurnId = () => null;
+    getUnsettledRunChatIds = () => [];
+    getRunGeneration = () => 0;
+    hasUnsettledRun = () => false;
+    canReconcileCanonicalCompletion = () => true;
+    reconcileCanonicalCompletion = () => true;
     fenceCanonicalCompletedTurns = vi.fn();
     getGoalState = () => undefined;
     sendMessage = sendMessageSpy;
@@ -297,11 +307,15 @@ import {
 import App from "@/App";
 import { mockBrowserFocus } from "./browser-focus";
 
+const defaultUseSessions = vi.mocked(useSessions).getMockImplementation()!;
+
 describe("App layout", () => {
   let restoreBrowserFocus: (() => void) | undefined;
   beforeEach(async () => {
     await i18n.changeLanguage("en");
     mockSessions = [];
+    vi.mocked(useSessions).mockImplementation(defaultUseSessions);
+    clearReloadCache();
     connectSpy.mockClear();
     updateUrlSpy.mockClear();
     refreshSpy.mockReset();
@@ -356,15 +370,16 @@ describe("App layout", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows only layout shadows while bootstrap is pending", () => {
-    vi.mocked(fetchBootstrap).mockReturnValueOnce(new Promise(() => {}));
-    render(<App />);
-    expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "true");
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveClass("startup-status");
-    expect(screen.queryByText("Loading nanobot…")).not.toBeInTheDocument();
-  });
+  it.each(["skills", "apps", "channels", "automations", "settings", "chat"]) (
+    "keeps the %s document skeleton while bootstrap is pending", (surface) => {
+      window.history.replaceState(null, "", `/#/${surface}`);
+      vi.mocked(fetchBootstrap).mockReturnValueOnce(new Promise(() => {}));
+      render(<App />);
+      expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "true");
+      expect(screen.getByRole("main")).toHaveAttribute("data-startup-surface", surface);
+      expect(screen.getByRole("status")).toHaveTextContent("Loading nanobot…");
+    },
+  );
 
   it.each([false, true])("enables task controls only when bootstrap advertises support: %s", async (supported) => {
     mockSessions = [{
@@ -1855,8 +1870,7 @@ describe("App layout", () => {
       schema_version: 1, pinned_keys: [], archived_keys: [], session_order: [],
       title_overrides: { [key]: "推特大战场" }, project_name_overrides: {},
       tags_by_key: {}, collapsed_groups: {}, workbench: { version: 1, tabs: {} },
-      view: { density: "comfortable", show_previews: false, show_timestamps: false,
-        show_archived: false, sort: "updated_desc" },
+      view: { density: "comfortable", show_archived: false, sort: "updated_desc" },
     };
     mockFetchRoutes({
       "/api/settings": baseSettingsPayload(),
@@ -2563,7 +2577,65 @@ describe("App layout", () => {
     );
   }, 15_000);
 
-  it("applies persisted sidebar workspace state from the gateway", async () => {
+  it("renames inline in the mobile drawer without dismissing it and reloads the saved title", async () => {
+    restoreBrowserFocus = mockBrowserFocus();
+    const user = userEvent.setup();
+    mockSessions = [{
+      key: "websocket:chat-a", channel: "websocket", chatId: "chat-a",
+      createdAt: null, updatedAt: null, title: "Existing chat", preview: "",
+    }];
+    vi.stubGlobal("matchMedia", vi.fn().mockImplementation((query: string) => ({
+      matches: !query.includes("1024px"), media: query, onchange: null,
+      addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(),
+      removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+    })));
+    let persisted: SidebarStatePayload | null = null;
+    mockFetchRoutes({ "/api/webui/sidebar-state": () => persisted ?? {} });
+    setSidebarStateSpy.mockImplementation(async (state: SidebarStatePayload) => {
+      persisted = state;
+      return state;
+    });
+    const firstRender = render(<App />);
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    act(() => statusHandlers.forEach((handler) => handler("open")));
+    const route = window.location.hash;
+    await user.click(await screen.findByRole("button", { name: "Toggle sidebar" }));
+    const sheet = await screen.findByRole("dialog");
+    const startRename = async () => {
+      await user.click(within(sheet).getByRole("button", { name: "Topic actions for Existing chat" }));
+      await user.click(await within(sheet).findByRole("menuitem", { name: "Rename", exact: true }));
+      return within(sheet).getByRole("textbox", { name: "Topic name" });
+    };
+    const firstInput = await startRename();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    fireEvent.compositionStart(firstInput);
+    fireEvent.keyDown(firstInput, { key: "Escape" });
+    expect(firstInput).toBeInTheDocument();
+    expect(sheet).toBeInTheDocument();
+    fireEvent.compositionEnd(firstInput);
+    fireEvent.keyDown(firstInput, { key: "Escape" });
+    expect(within(sheet).queryByRole("textbox")).not.toBeInTheDocument();
+    expect(sheet).toBeInTheDocument();
+
+    const input = await startRename();
+    await user.clear(input);
+    await user.type(input, "Renamed topic");
+    setSidebarStateSpy.mockRejectedValueOnce(new Error("Disk full"));
+    await user.keyboard("{Enter}");
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("Couldn't save the name. Try again.");
+    expect(input).toHaveValue("Renamed topic");
+    expect(persisted?.title_overrides["websocket:chat-a"]).toBeUndefined();
+    await user.keyboard("{Enter}");
+    expect(await within(sheet).findByRole("button", { name: "Renamed topic", exact: true })).toBeInTheDocument();
+    expect(persisted?.title_overrides["websocket:chat-a"]).toBe("Renamed topic");
+    expect(window.location.hash).toBe(route);
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    firstRender.unmount();
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Renamed topic", exact: true })).toBeInTheDocument();
+  });
+
+  it("retries a failed sidebar read before enabling edits without losing saved state", async () => {
     mockSessions = [
       {
         key: "websocket:chat-a",
@@ -2591,18 +2663,18 @@ describe("App layout", () => {
       collapsed_groups: {},
       view: {
         density: "comfortable",
-        show_previews: false,
-        show_timestamps: false,
         show_archived: false,
         sort: "updated_desc",
       },
       updated_at: null,
     };
+    let sidebarReads = 0;
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation(async (url: string | URL | Request) => {
         const href = String(url);
         if (href === "/api/webui/sidebar-state") {
+          if (++sidebarReads === 1) throw new Error("Gateway restarting");
           return { ok: true, json: async () => initialState };
         }
         return { ok: false, status: 404 };
@@ -2616,8 +2688,11 @@ describe("App layout", () => {
       statusHandlers.forEach((handler) => handler("open"));
     });
     const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
+    expect(within(sidebar).getByText("Loading…")).toBeInTheDocument();
+    expect(setSidebarStateSpy).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(within(sidebar).getByText("Pinned")).toBeInTheDocument(),
+      { timeout: 5_000 },
     );
     expect(within(sidebar).getByRole("button", { name: /^Roadmap$/ })).toBeInTheDocument();
     expect(within(sidebar).queryByRole("button", { name: /^First chat$/ })).not.toBeInTheDocument();
@@ -2629,12 +2704,120 @@ describe("App layout", () => {
     expect(within(sidebar).getByRole("button", { name: /^First chat$/ })).toBeInTheDocument();
     expect(setSidebarStateSpy).toHaveBeenCalledWith(
       expect.objectContaining({
+        pinned_keys: initialState.pinned_keys,
+        archived_keys: initialState.archived_keys,
+        title_overrides: initialState.title_overrides,
         view: expect.objectContaining({ show_archived: true }),
       }),
     );
 
     expect(within(sidebar).queryByRole("button", { name: "View" })).not.toBeInTheDocument();
-  });
+  }, 10_000);
+
+  it.each([false, true])("preserves sidebar metadata and panes after both reads fail with partial cache: %s", async (cached) => {
+    const actual = await vi.importActual<typeof import("@/hooks/useSessions")>("@/hooks/useSessions");
+    vi.mocked(useSessions).mockImplementation(actual.useSessions);
+    const sessions: ChatSummary[] = ["a", "b"].map((id) => ({
+      key: `websocket:chat-${id}`, channel: "websocket", chatId: `chat-${id}`,
+      createdAt: null, updatedAt: null, preview: "",
+    }));
+    if (cached) {
+      activateReloadCache("ws://test");
+      writeReloadCache("sessions", sessions.slice(0, 1));
+    }
+    const saved = {
+      schema_version: 1,
+      pinned_keys: ["websocket:chat-b", "websocket:deleted"],
+      archived_keys: ["websocket:deleted"],
+      session_order: ["websocket:chat-a", "websocket:chat-b", "websocket:deleted"],
+      title_overrides: {
+        "websocket:chat-a": "Saved A", "websocket:chat-b": "Saved B", "websocket:deleted": "Old topic",
+      },
+      project_name_overrides: {},
+      tags_by_key: { "websocket:chat-b": ["important"], "websocket:deleted": ["old"] },
+      collapsed_groups: {},
+      workbench: {
+        version: 1,
+        tabs: {
+          "tab:saved": {
+            explicit: true, title: "Saved group",
+            paneKeys: ["websocket:chat-a", "websocket:chat-b", "websocket:deleted"],
+            layoutPaneKeys: ["websocket:chat-b", "websocket:chat-a", "websocket:deleted"],
+            layout: "columns", splitRatios: [0.4, 0.6],
+          },
+        },
+      },
+      view: {
+        density: "comfortable", show_archived: false, sort: "updated_desc",
+      },
+      updated_at: null,
+    };
+    let sidebarReads = 0;
+    let sessionsFail = true;
+    let serverSessions = sessions;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/sessions") {
+        return sessionsFail
+          ? Response.json({}, { status: 503 })
+          : jsonResponse({ sessions: serverSessions });
+      }
+      if (String(input) === "/api/webui/sidebar-state") {
+        return ++sidebarReads === 1
+          ? Response.json({}, { status: 503 })
+          : jsonResponse(saved);
+      }
+      return Response.json({}, { status: 404 });
+    }));
+
+    const markersKey = "nanobot-webui.sidebar.session-updates.v1";
+    localStorage.setItem(markersKey, JSON.stringify(["chat-b", "deleted"]));
+    render(<App />);
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    act(() => statusHandlers.forEach((handler) => handler("open")));
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
+    expect(within(sidebar).getByText("Loading…")).toBeInTheDocument();
+    await waitFor(() => expect(sidebarReads).toBe(2), { timeout: 5_000 });
+    await act(async () => {});
+    expect(within(sidebar).queryByText("Loading…")).not.toBeInTheDocument();
+    expect(setSidebarStateSpy).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem(markersKey)!)).toEqual(["chat-b", "deleted"]);
+
+    // A successful full list can authorize removal; the failed read and cache cannot.
+    sessionsFail = false;
+    act(() => sessionUpdateHandlers.forEach((handler) => handler("chat-a")));
+    await within(sidebar).findByRole("button", { name: "Group: Saved group" });
+    expect(await within(sidebar).findByRole("button", { name: "Saved B", exact: true })).toBeInTheDocument();
+    await waitFor(() => expect(setSidebarStateSpy).toHaveBeenLastCalledWith({
+      ...saved,
+      view: expect.objectContaining(saved.view),
+      pinned_keys: ["websocket:chat-b"],
+      archived_keys: [],
+      session_order: ["websocket:chat-a", "websocket:chat-b"],
+      title_overrides: { "websocket:chat-a": "Saved A", "websocket:chat-b": "Saved B" },
+      tags_by_key: { "websocket:chat-b": ["important"] },
+      workbench: {
+        version: 1,
+        tabs: {
+          "tab:saved": {
+            ...saved.workbench.tabs["tab:saved"],
+            paneKeys: ["websocket:chat-a", "websocket:chat-b"],
+            layoutPaneKeys: ["websocket:chat-b", "websocket:chat-a"],
+            splitRatios: [],
+          },
+        },
+      },
+    }));
+
+    expect(JSON.parse(localStorage.getItem(markersKey)!)).toEqual(["chat-b"]);
+    serverSessions = [];
+    act(() => sessionUpdateHandlers.forEach((handler) => handler("chat-a")));
+    await waitFor(() => expect(setSidebarStateSpy).toHaveBeenLastCalledWith({
+      ...saved, view: expect.objectContaining(saved.view),
+      pinned_keys: [], archived_keys: [], session_order: [],
+      title_overrides: {}, tags_by_key: {}, workbench: { version: 1, tabs: {} },
+    }));
+    expect(JSON.parse(localStorage.getItem(markersKey)!)).toEqual([]);
+  }, 10_000);
 
   it("sorts chats by displayed title when A-Z is persisted", async () => {
     mockSessions = [
@@ -2674,8 +2857,6 @@ describe("App layout", () => {
       collapsed_groups: {},
       view: {
         density: "comfortable",
-        show_previews: false,
-        show_timestamps: false,
         show_archived: false,
         sort: "title_asc",
       },
@@ -2855,59 +3036,7 @@ describe("App layout", () => {
       .not.toBeInTheDocument();
   });
 
-  it("does not show a completed dot later when the active session finishes", async () => {
-    mockSessions = [
-      {
-        key: "websocket:chat-a",
-        channel: "websocket",
-        chatId: "chat-a",
-        createdAt: "2026-04-16T10:00:00Z",
-        updatedAt: "2026-04-16T10:00:00Z",
-        preview: "Active work",
-      },
-      {
-        key: "websocket:chat-b",
-        channel: "websocket",
-        chatId: "chat-b",
-        createdAt: "2026-04-16T11:00:00Z",
-        updatedAt: "2026-04-16T11:00:00Z",
-        preview: "Other chat",
-      },
-    ];
-
-    render(<App />);
-
-    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
-    const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
-    await waitFor(() =>
-      expect(
-        within(sidebar).getByRole("button", { name: /^Active work$/ }),
-      ).toBeInTheDocument(),
-    );
-
-    await act(async () => {
-      fireEvent.click(within(sidebar).getByRole("button", { name: /^Active work$/ }));
-    });
-    await waitFor(() => expect(document.title).toContain("Active work"));
-
-    act(() => {
-      for (const handler of runStatusHandlers) handler("chat-a", 12_345);
-    });
-    expect(within(sidebar).getByTitle("Agent running")).toBeInTheDocument();
-
-    act(() => {
-      for (const handler of runStatusHandlers) handler("chat-a", null);
-    });
-    expect(within(sidebar).queryByTitle("Agent running")).not.toBeInTheDocument();
-    expect(within(sidebar).queryByTitle("Agent finished")).not.toBeInTheDocument();
-
-    await act(async () => {
-      fireEvent.click(within(sidebar).getByRole("button", { name: /^Other chat$/ }));
-    });
-    expect(within(sidebar).queryByTitle("Agent finished")).not.toBeInTheDocument();
-  });
-
-  it("restores sidebar run indicators after a page reload", async () => {
+it("restores sidebar runs from lifecycle replay without reviving them from stale session rows", async () => {
     mockSessions = [
       {
         key: "websocket:chat-a",
@@ -2932,15 +3061,23 @@ describe("App layout", () => {
       JSON.stringify(["chat-b"]),
     );
 
-    render(<App />);
+    const { rerender } = render(<App />);
 
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
     const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
-    await waitFor(() =>
-      expect(within(sidebar).getByRole("img", { name: "Agent running" })).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(attachSpy).toHaveBeenCalledWith("chat-a"));
+    expect(within(sidebar).queryByRole("img", { name: "Agent running" })).not.toBeInTheDocument();
+    act(() => {
+      for (const handler of runStatusHandlers) handler("chat-a", 12_345);
+    });
+    expect(within(sidebar).getByRole("img", { name: "Agent running" })).toBeInTheDocument();
     expect(within(sidebar).getByRole("img", { name: "New activity" })).toBeInTheDocument();
-    expect(attachSpy).toHaveBeenCalledWith("chat-a");
+    act(() => {
+      for (const handler of runStatusHandlers) handler("chat-a", null);
+    });
+    mockSessions = mockSessions.map((session) => ({ ...session }));
+    rerender(<App />);
+    expect(within(sidebar).queryByRole("img", { name: "Agent running" })).not.toBeInTheDocument();
   });
 
   it("restores the active chat from the URL hash after a page reload", async () => {
