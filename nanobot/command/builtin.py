@@ -198,6 +198,16 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "list",
     ),
     BuiltinCommandSpec(
+        "/handler",
+        "Switch session",
+        "Switch the active session in TUI mode. Accepts canonical "
+        "(channel:name#NN), WebUI (websocket:channel:name:NN), and bare "
+        "(name#NN with current channel) forms.",
+        "target",
+        "<session-id>",
+        accepts_args=True,
+    ),
+    BuiltinCommandSpec(
         "/pack",
         "Session pack",
         "Create or switch to a topic-based session pack.",
@@ -1186,6 +1196,11 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.prefix("/prompt ", cmd_prompt)
     router.exact("/prompt", cmd_prompt)
     router.exact("/prompt-list", cmd_prompt_list)
+    # Session-handler command (lazy import to avoid circular dependencies)
+    from nanobot.command.handler_cmds import cmd_handler
+
+    router.prefix("/handler ", cmd_handler)
+    router.exact("/handler", cmd_handler)
     # Session pack commands (lazy import to avoid circular dependencies)
     from nanobot.command.pack_cmds import cmd_pack, cmd_pack_list, cmd_pack_search, cmd_pack_summarize
     router.exact("/pack", cmd_pack)

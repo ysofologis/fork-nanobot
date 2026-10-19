@@ -1082,6 +1082,8 @@ files = [
     "nanobot/agent/context_governance.py", "nanobot/agent/runner.py",
     "nanobot/agent/loop.py", "nanobot/config/schema.py",
     "nanobot/command/prompt_cmds.py",
+    "nanobot/command/handler_cmds.py",
+    "nanobot/command/handler_grammar.py",
 ]
 for f in files:
     ast.parse(open(f).read())
@@ -1096,7 +1098,9 @@ uv run --no-sync python -c \
    from nanobot.agent.context import ContextBuilder; \
    from nanobot.session.manager import SessionManager; \
    from nanobot.utils.helpers import _write_text_atomic, maybe_persist_tool_result; \
-   from nanobot.command.prompt_cmds import cmd_prompt, cmd_prompt_list; print('imports OK')"
+   from nanobot.command.prompt_cmds import cmd_prompt, cmd_prompt_list; \
+   from nanobot.command.handler_grammar import parse_handler_target, HandlerGrammarError; \
+   from nanobot.command.handler_cmds import cmd_handler; print('imports OK')"
 
 # Command tests for the prompt launcher
 python3 -m pytest tests/command/test_prompt_commands.py -q
