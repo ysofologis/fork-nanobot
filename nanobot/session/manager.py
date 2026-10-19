@@ -478,24 +478,6 @@ class SessionManager:
         if session.policy.persist:
             self._store.save(session)
 
-    def save_runtime_checkpoint_snapshot(
-        self,
-        session: Session,
-        *,
-        payload: dict[str, Any],
-        provider_state: ProviderConversationState | None,
-    ) -> None:
-        """Persist a captured checkpoint snapshot (coalescing writer path)."""
-        if not session.policy.persist:
-            return
-        if self._store is self._jsonl_store:
-            self._jsonl_store.save_runtime_checkpoint_snapshot(
-                session,
-                payload=payload,
-                provider_state=provider_state,
-            )
-            self._remember(session)
-
     def rename_model_preset(self, old_name: str, new_name: str) -> int:
         """Rename references offline or bridge a settings worker to the async owner."""
         if self._state is not None and self._state.is_bound:
