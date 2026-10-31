@@ -9,6 +9,7 @@ import { ChannelsSettings } from "@/components/settings/system/ChannelsSettings"
 import { McpManagementDialog } from "@/components/settings/system/McpManagementDialog";
 import { WorkspaceProjectPicker } from "@/components/thread/WorkspaceControls";
 import { settings } from "@/dev/gallery/settings";
+import { useReadingTypography } from "@/hooks/useReadingTypography";
 import { fetchWorkspaceDirectories } from "@/lib/api";
 import type { McpPresetInfo, NanobotFeatureInfo } from "@/lib/types";
 
@@ -22,6 +23,7 @@ const preset: McpPresetInfo = {
 };
 
 export function SkeletonFixture({ surface, loading }: { surface: string; loading: boolean }) {
+  useReadingTypography();
   const [model, setModel] = useState("");
   const [previewLoading, setPreviewLoading] = useState(loading);
   const feature: NanobotFeatureInfo = {
@@ -29,7 +31,7 @@ export function SkeletonFixture({ surface, loading }: { surface: string; loading
     configured: true, ready: true, install_supported: true, status: "enabled", requires_restart: false,
   };
   return <main className="settings-grid mx-auto w-full max-w-4xl p-4" data-testid="skeleton-fixture">
-    {surface === "workspace" ? <WorkspaceProjectPicker isHero scope={{ project_path: "/srv/workspace", access_mode: "restricted" }}
+    {surface === "workspace" ? <WorkspaceProjectPicker scope={{ project_path: "/srv/workspace", access_mode: "restricted" }}
       defaultScope={{ project_path: "/srv/workspace", access_mode: "restricted" }}
       controls={{ can_change_project: true, can_browse_directories: true }}
       onBrowseDirectories={(path, query, showHidden, allowPartial) => fetchWorkspaceDirectories("fixture", path, query, showHidden, allowPartial)}
