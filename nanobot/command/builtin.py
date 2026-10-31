@@ -1,5 +1,3 @@
-"""Built-in slash command handlers."""
-
 from __future__ import annotations
 
 import asyncio
@@ -456,6 +454,7 @@ async def cmd_compact(ctx: CommandContext) -> None:
             runtime=runtime,
             events=delivery.events,
             notify=True,
+            reason="manual",
         )
     except Exception:
         logger.exception("Manual context compaction failed for {}", ctx.key)
@@ -738,7 +737,6 @@ def _format_dream_no_input_message() -> str:
 
 
 def _extract_changed_files(diff: str) -> list[str]:
-    """Extract changed file paths from a unified diff."""
     files: list[str] = []
     seen: set[str] = set()
     for line in diff.splitlines():
@@ -842,7 +840,6 @@ async def cmd_dream_log(ctx: CommandContext) -> OutboundMessage:
     args = ctx.args.strip()
 
     if args:
-        # Show diff of a specific commit
         sha = args.split()[0]
         result = git.show_commit_diff(sha)
         if not result:
@@ -855,7 +852,6 @@ async def cmd_dream_log(ctx: CommandContext) -> OutboundMessage:
             commit, diff = result
             content = _format_dream_log_content(commit, diff, requested_sha=sha)
     else:
-        # Default: show the latest Dream commit's diff
         commits = git.log(max_entries=1, message_prefix=_DREAM_COMMIT_PREFIX)
         result = (
             git.show_commit_diff(
@@ -897,7 +893,6 @@ async def cmd_dream_restore(ctx: CommandContext) -> OutboundMessage:
 
     args = ctx.args.strip()
     if not args:
-        # Show recent Dream commits for the user to pick
         commits = git.log(max_entries=10, message_prefix=_DREAM_COMMIT_PREFIX)
         if not commits:
             content = "Dream memory has no saved versions to restore yet."
@@ -939,7 +934,6 @@ _HISTORY_MAX_CONTENT_CHARS = 200
 
 
 def _format_history_message(msg: dict[str, Any]) -> str | None:
-    """Format a single history message for display. Returns None to skip."""
     role = msg.get("role")
     if role not in ("user", "assistant"):
         return None
@@ -1037,8 +1031,12 @@ async def cmd_goal(ctx: CommandContext) -> InboundMessage | OutboundMessage:
 async def cmd_pairing(ctx: CommandContext) -> OutboundMessage:
     """List, approve, deny or revoke pairing requests."""
     from nanobot.pairing import PAIRING_COMMAND_META_KEY, handle_pairing_command
+    from nanobot.pairing.events import PairingChanged
 
-    reply = handle_pairing_command(ctx.msg.channel, ctx.args)
+    def changed() -> None:
+        ctx.loop.bus.publish_nowait(PairingChanged())
+
+    reply = handle_pairing_command(ctx.msg.channel, ctx.args, on_change=changed)
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,

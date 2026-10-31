@@ -1,5 +1,3 @@
-"""Shared execution loop for tool-using agents."""
-
 from __future__ import annotations
 
 import asyncio
@@ -85,7 +83,6 @@ _PromptResult = TypeVar("_PromptResult")
 
 
 def _restore_outer_whitespace(content: str, original: str | None) -> str:
-    """Restore boundary whitespace stripped while cleaning one recovered segment."""
     if not original:
         return content
     leading_size = len(original) - len(original.lstrip())
@@ -191,7 +188,6 @@ class AgentRunner:
         wait_at_terminal: bool = False,
         drain_callback: bool = True,
     ) -> tuple[bool, int]:
-        """Append one pending-input snapshot and return whether execution continues."""
         injections = await self._drain_injections(spec) if drain_callback else []
         real_injection = bool(injections)
         if not injections and allow_continuation and assistant_message is not None:
@@ -266,7 +262,6 @@ class AgentRunner:
         *,
         terminal: bool = False,
     ) -> list[dict[str, Any]]:
-        """Drain one pending-input snapshot via the injection callback."""
         callback = (
             spec.terminal_injection_callback
             if terminal
@@ -422,7 +417,6 @@ class AgentRunner:
         stop_reason = "completed"
         tool_events: list[dict[str, str]] = []
         external_lookup_counts: dict[str, int] = {}
-        # Per-turn throttle for repeated attempts against the same outside target.
         workspace_violation_counts: dict[str, int] = {}
         empty_content_retries = 0
         # Segments from one uninterrupted length-recovery chain. Tool work or
@@ -728,6 +722,23 @@ class AgentRunner:
                     response,
                 )
 
+            if response.finish_reason == "error":
+                interrupted_parts = [
+                    content
+                    for part in context.streamed_content_parts
+                    if (content := extract_reasoning(None, None, part)[1])
+                ]
+                interrupted_content = hook.finalize_content(
+                    context, "\n\n".join(interrupted_parts),
+                )
+                if not is_blank_text(interrupted_content):
+                    # This is unsynchronized output, not a completed response or
+                    # provider-owned projection. Keep it in the next native delta.
+                    messages.append({
+                        **build_assistant_message(interrupted_content),
+                        "_interrupted": True,
+                    })
+
             # Check for mid-turn injections BEFORE signaling stream end.
             # If injections are found we keep the stream alive (resuming=True)
             # so streaming channels don't prematurely finalize the card.
@@ -936,6 +947,13 @@ class AgentRunner:
         first_output_at: float | None = None
         generation_started_at: float | None = None
         generation_elapsed_s = 0.0
+        stream_buf = ""
+
+        def _end_stream_segment() -> None:
+            nonlocal stream_buf
+            if stream_buf:
+                context.streamed_content_parts.append(stream_buf)
+                stream_buf = ""
 
         def _generation_delta(delta: str) -> None:
             nonlocal first_output_at, generation_started_at
@@ -983,6 +1001,8 @@ class AgentRunner:
             if event.get("kind") != "hosted_tool":
                 return
             await _close_native_reasoning()
+            if event.get("phase") == "start":
+                _end_stream_segment()
             await hook.on_provider_tool_event(context, event)
             call_id = event.get("call_id")
             if not call_id:
@@ -997,6 +1017,8 @@ class AgentRunner:
             thinking_buf = ""
 
             async def _stream(delta: str) -> None:
+                nonlocal stream_buf
+                stream_buf += delta
                 _generation_delta(delta)
                 if delta:
                     context.streamed_content = True
@@ -1020,6 +1042,7 @@ class AgentRunner:
             async def _stream_recover() -> None:
                 _pause_generation()
                 await _close_native_reasoning()
+                _end_stream_segment()
                 await hook.on_stream_end(context, resuming=True)
 
             kwargs.update(
@@ -1041,6 +1064,7 @@ class AgentRunner:
             raise
         _pause_generation()
         await _close_native_reasoning()
+        _end_stream_segment()
         if first_output_at is not None:
             response.ttft_ms = max(0, round((first_output_at - request_started_at) * 1000))
         if generation_elapsed_s > 0:
