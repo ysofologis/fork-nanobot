@@ -106,14 +106,14 @@ test("reduced motion keeps the canvas fade but switches the icon directly", asyn
 
 for (const width of [1440, 390]) {
   for (const initial of ["light", "dark"] as const) {
-    test(`reduced motion fades existing chat surfaces together from ${initial} at ${width}px`, async ({ page }) => {
+    test(`reduced motion fades shared-composer chat surfaces together from ${initial} at ${width}px`, async ({ page }) => {
       await page.emulateMedia({ reducedMotion: "reduce" });
       await page.setViewportSize({ width, height: 844 });
       await page.addInitScript((theme) => {
         localStorage.setItem("nanobot.locale", "en");
         localStorage.setItem("nanobot-webui.theme", theme);
       }, initial);
-      await page.goto("/browser/fixture.html?case=theme-toggle&chat");
+      await page.goto("/browser/fixture.html?case=theme-toggle&chat&split");
       const input = page.getByRole("textbox");
       await input.fill("Keep this draft while changing theme");
       const inputBox = await input.boundingBox();
@@ -199,6 +199,7 @@ for (const width of [1440, 390]) {
           oldBlend: oldTheme.mixBlendMode, newBlend: newTheme.mixBlendMode,
           isolation: getComputedStyle(root, "::view-transition-image-pair(root)").isolation,
           mask: newTheme.maskImage, clip: newTheme.clipPath,
+          artworkDuration: getComputedStyle(document.querySelector(".theme-art")!).transitionDuration,
         };
       });
       expect(middle.durations).toEqual([200, 200]);
@@ -212,6 +213,7 @@ for (const width of [1440, 390]) {
       expect(middle.isolation).toBe("isolate");
       expect(middle.mask).toBe("none");
       expect(middle.clip).toBe("none");
+      expect(middle.artworkDuration).toBe("0s");
       await expect(toggle).toBeFocused();
       expect(await input.boundingBox()).toEqual(box);
       await page.screenshot({ path: test.info().outputPath(`crossfade-${width}-${initial}-mid.png`), animations: "allow" });
