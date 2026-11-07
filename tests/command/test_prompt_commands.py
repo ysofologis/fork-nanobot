@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from nanobot.bus.events import InboundMessage
-from nanobot.command.builtin import register_builtin_commands
+from nanobot.command.application import register_builtin_commands
 from nanobot.command.router import CommandContext, CommandRouter
 
 
@@ -108,7 +108,7 @@ class TestPromptCommand:
         assert router.is_dispatchable_command("/prompt my_prompt") is True
         assert router.is_dispatchable_command("/prompt") is True
         # No-arg /prompt is a side-channel usage; with args it enters the agent path.
-        from nanobot.command.builtin import builtin_command_starts_agent_turn
+        from nanobot.command.application import builtin_command_starts_agent_turn
 
         assert builtin_command_starts_agent_turn("/prompt") is False
         assert builtin_command_starts_agent_turn("/prompt my_prompt") is True

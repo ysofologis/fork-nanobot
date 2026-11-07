@@ -62,7 +62,7 @@ def _ctx(args: str, *, channel: str = "websocket", chat_id: str = "websocket:abc
     )
     return CommandContext(
         msg=msg, session=None, key=current_key, raw=f"/handler {args}".rstrip(),
-        args=args, runtime=None, is_user_turn=True, turn_scopes=[], loop=_StubLoop(),
+        args=args, runtime=None, is_user_turn=True, loop=_StubLoop(),
     )
 
 
